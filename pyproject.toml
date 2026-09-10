@@ -1,0 +1,45 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Voice interface to Claude Code tmux sessions while driving"
+authors = [
+    { name = "Westley Yarlott", email = "westleyyarlott@gmail.com" }
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy>=1.26",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+audio = [
+    "pipecat-ai[silero,whisper,openai,websocket,local]>=0.0.53",
+    "faster-whisper>=1.0",
+    "kokoro-onnx>=0.4",
+    "openwakeword>=0.6",
+]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+jarvis = "jarvis:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: integration tests touching ollama, real tmux, or TTS services",
+]
+asyncio_mode = "auto"

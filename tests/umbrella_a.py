@@ -5,24 +5,22 @@ Exercises: Reader cursor lifecycle, Conversation DRAFTING/CONFIRMING ->
 SendPrompt, InterruptGate composed with the hallucination filter, and
 EventStore -> claude_summary falling back to tmux_read. Per-leaf edge
 cases live in each leaf's own test file, not here.
+
+Imports are deferred INSIDE each test function rather than at module level.
+Cascade A spans two waves (wave 1: reader/conversation/tmux/hallucination;
+wave 2: gate/events, which import wave-1 modules) admitted one leaf at a
+time. A module-level import would make the whole file fail collection
+(0 tests reporting) until every leaf across both waves exists, which
+defeats the per-leaf incremental pre/post admission check. Deferred
+imports let each test collect and report independently, so passing count
+rises leaf by leaf as the wave admits.
 """
 from unittest.mock import patch
 
-from jarvis.types import (
-    AudioSegmentResult,
-    ConversationState,
-    SendPrompt,
-    TranscriptEvent,
-    VADParams,
-    WhisperSegment,
-)
-from jarvis.reader import Reader
-from jarvis.conversation import Conversation
-from jarvis.audio.gate import InterruptGate
-from jarvis.events import EventStore, claude_summary
-
 
 def test_reader_reads_then_resumes_after_interruption():
+    from jarvis.reader import Reader
+
     reader = Reader("First sentence. Second sentence. Third sentence.")
     assert reader.next() == "First sentence."
     assert reader.next() == "Second sentence."
@@ -34,6 +32,9 @@ def test_reader_reads_then_resumes_after_interruption():
 
 
 def test_conversation_draft_confirm_send_flow():
+    from jarvis.conversation import Conversation
+    from jarvis.types import ConversationState, SendPrompt, TranscriptEvent
+
     convo = Conversation(active_tab=3)
     convo.speech_start()
     convo.llm_intent("draft")
@@ -51,6 +52,14 @@ def test_conversation_draft_confirm_send_flow():
 
 
 def test_interrupt_gate_rejects_hallucinated_segment_even_with_wake_word():
+    from jarvis.audio.gate import InterruptGate
+    from jarvis.types import (
+        AudioSegmentResult,
+        ConversationState,
+        VADParams,
+        WhisperSegment,
+    )
+
     gate = InterruptGate(
         vad_params=VADParams(confidence=0.7, start_secs=0.3, stop_secs=0.8, min_volume=0.6),
         min_words=3,
@@ -70,6 +79,8 @@ def test_interrupt_gate_rejects_hallucinated_segment_even_with_wake_word():
 
 
 def test_claude_summary_falls_back_to_tmux_read_when_no_event():
+    from jarvis.events import EventStore, claude_summary
+
     store = EventStore()
     with patch("jarvis.events.tmux_read", return_value="cleaned pane text") as mock_read:
         summary = claude_summary(tab=2, store=store)

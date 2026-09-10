@@ -1,0 +1,35 @@
+# claude-manager-mode — project config
+
+spec_dir          = "specs/"
+type_contract_path = "jarvis/types.py"
+
+umbrella_test_cmd = "pytest tests/umbrella_a.py"
+graphify_cmd      = ""
+
+parent_owned = [
+  "jarvis/types.py",
+  "tests/conftest.py",
+  "tests/umbrella*.py",
+  "tests/integration/**",
+]
+
+[invariants]
+max_impl_lines      = 1000
+max_test_assertions = 40
+ambiguous_verbs = [
+  "decide", "choose", "design", "determine",
+  "figure out", "resolve", "as appropriate",
+  "use your judgment", "pick", "select an approach",
+]
+
+[complexity]
+max_cyclomatic = 10
+max_nesting     = 3
+
+[scale]
+sublinear     = 1.5
+linear_ish    = 3.0
+quadratic_ok  = 6.0
+
+[gates]
+extra_spec_gate_cmds = []

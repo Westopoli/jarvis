@@ -501,7 +501,10 @@ audio = [
     { name = "faster-whisper" },
     { name = "kokoro-onnx" },
     { name = "openwakeword" },
-    { name = "pipecat-ai", extra = ["local", "websocket", "whisper"] },
+    { name = "pipecat-ai", extra = ["websocket", "whisper"] },
+]
+audio-local = [
+    { name = "pipecat-ai", extra = ["local"] },
 ]
 dev = [
     { name = "pytest" },
@@ -519,13 +522,14 @@ requires-dist = [
     { name = "kokoro-onnx", marker = "extra == 'audio'", specifier = ">=0.4" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openwakeword", marker = "extra == 'audio'", specifier = ">=0.6" },
-    { name = "pipecat-ai", extras = ["silero", "whisper", "openai", "websocket", "local"], marker = "extra == 'audio'", specifier = ">=0.0.53" },
+    { name = "pipecat-ai", extras = ["local"], marker = "extra == 'audio-local'", specifier = ">=0.0.53" },
+    { name = "pipecat-ai", extras = ["silero", "whisper", "openai", "websocket"], marker = "extra == 'audio'", specifier = ">=0.0.53" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "soundfile", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["audio", "server", "dev"]
+provides-extras = ["audio", "audio-local", "server", "dev"]
 
 [[package]]
 name = "jiter"

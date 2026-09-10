@@ -13,10 +13,18 @@ dependencies = [
 
 [project.optional-dependencies]
 audio = [
-    "pipecat-ai[silero,whisper,openai,websocket,local]>=0.0.53",
+    "pipecat-ai[silero,whisper,openai,websocket]>=0.0.53",
     "faster-whisper>=1.0",
     "kokoro-onnx>=0.4",
     "openwakeword>=0.6",
+]
+# Real desktop mic/speaker I/O (LocalAudioTransport). Needs the portaudio19-dev
+# system package to build pyaudio — not required for the automated test suite,
+# which drives pipeline tests through a fake transport harness. Install with
+# `sudo apt-get install -y portaudio19-dev && uv sync --extra audio-local`
+# before running the real desktop voice loop (slice 6/8 manual smoke checks).
+audio-local = [
+    "pipecat-ai[local]>=0.0.53",
 ]
 server = [
     "fastapi>=0.115",

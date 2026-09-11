@@ -66,7 +66,7 @@ def test_pipeline_composes_real_conversation_reader_and_gate_via_fake_transport(
     from jarvis.conversation import Conversation
     from jarvis.reader import Reader
     from jarvis.audio.gate import InterruptGate
-    from jarvis.types import VADParams
+    from jarvis.types import ConversationState, VADParams
     from tests.harness.fake_transport import FakeTransport
 
     transport = FakeTransport()
@@ -83,11 +83,19 @@ def test_pipeline_composes_real_conversation_reader_and_gate_via_fake_transport(
     pipeline = build_pipeline(transport, convo, reader, gate)
     assert pipeline is not None
 
+    # AC-10 asks for "a sequence of transcript-text frames" driving IDLE
+    # through NARRATING to an interrupt — a single interrupting frame with
+    # no prior narration tick has nothing to interrupt yet. First tick: a
+    # sub-threshold segment (word count below the gate's minimum) neither
+    # interrupts nor exits NARRATING, so it advances narration by one
+    # sentence. Second tick: the wake-word segment interrupts.
+    transport.push_transcript("um", words=1, has_wake_word=False)
     transport.push_transcript("jarvis stop reading that", words=4, has_wake_word=True)
 
     emitted = transport.emitted_tts_text()
     assert len(emitted) >= 1
     assert any("narrated sentence" in t for t in emitted)
+    assert convo.state != ConversationState.NARRATING
 
 
 @pytest.mark.slow

@@ -3,7 +3,7 @@
 spec_dir          = "specs/"
 type_contract_path = "jarvis/types.py"
 
-umbrella_test_cmd = "uv run pytest tests/umbrella_a.py"
+umbrella_test_cmd = "uv run pytest tests/umbrella_b.py"
 graphify_cmd      = ""
 
 parent_owned = [

@@ -1,15 +1,15 @@
-"""Cascade A type contract. Parent-owned; leaves import shapes from here,
-never edit this file. Only cross-leaf shared value types live here — each
-leaf implements its own callables in its own module (see spec's per-leaf
-file headers), importing these shapes where it needs them.
+"""Shared type contract across cascades. Parent-owned; leaves import shapes
+from here, never edit this file. Only cross-leaf shared value types live
+here — each leaf implements its own callables in its own module (see each
+spec's per-leaf file headers), importing these shapes where it needs them.
 
-Every symbol comment-cites the cascade-a.md spec line(s) it encodes.
+Every symbol comment-cites the spec file + line(s) it encodes.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
 
 # ---------------------------------------------------------------------------
@@ -104,3 +104,24 @@ class SessionEvent:
     last_message: str | None = None
     pending_permission: str | None = None
     ts: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# jarvis/repl.py, jarvis/tools/registry.py  (cascade-b.md spec_lines 3, 11-12)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionState:
+    """Per-conversation state threaded through tool dispatch and the REPL.
+    cascade-b.md spec_lines 3, 12. `event_store` defaults to a fresh
+    `jarvis.events.EventStore` (cascade A, already real) so `dispatch`'s
+    `claude_summary` route (spec_lines 12) always has a store to read,
+    without importing jarvis.events at the dataclass-definition site."""
+    active_tab: int | None = None
+    reader: Any | None = None
+    event_store: Any | None = None
+
+    def __post_init__(self) -> None:
+        if self.event_store is None:
+            from jarvis.events import EventStore
+            self.event_store = EventStore()

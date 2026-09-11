@@ -1,0 +1,49 @@
+# cascade-c
+
+## Summary
+
+Phone transport and voice-quality slices for Jarvis: a Telnyx WebSocket route wired to Pipecat's `TelnyxFrameSerializer` with a caller allow-list, deploy config (systemd units + Cloudflare Tunnel config + an environment config loader), an Orpheus TTS HTTP adapter (llama.cpp OpenAI-compatible server) with a realtime-factor check, and a filler-phrase strategy + latency logging utility. Telnyx credentials, the allowed caller number, and the public tunnel hostname are **placeholders** in this cascade — real values are supplied later via `.env`, not hardcoded, and every AC that depends on them is written to behave correctly (fail closed / report "not configured") when they are absent.
+
+## Acceptance criteria
+
+### Telnyx transport + server routes (`jarvis/transports/telnyx.py`, `jarvis/server.py`)
+1. `build_telnyx_serializer(stream_id: str, call_control_id: str | None = None) -> pipecat.serializers.telnyx.TelnyxFrameSerializer` constructs a real `TelnyxFrameSerializer` with `outbound_encoding="PCMU"`, `inbound_encoding="PCMU"`, and `api_key` read from the `TELNYX_API_KEY` env var (may be empty/unset — the serializer itself, not this function, is responsible for what it does with a missing key).
+2. `is_allowed_caller(from_number: str) -> bool` reads `TELNYX_ALLOWED_CALLER` (comma-separated E.164 numbers) from the environment at call time (not import time, so tests can monkeypatch it) and returns `True` only if `from_number` (after stripping whitespace) exactly matches one entry. When `TELNYX_ALLOWED_CALLER` is unset or empty, `is_allowed_caller` returns `False` for every input (fail closed — no caller is allowed until the env var is configured).
+3. `jarvis.server`'s FastAPI `app` gains a `WebSocket` route at `/ws/telnyx`. On connect, it reads the Telnyx `"start"` event JSON (the first message Telnyx's media-stream protocol sends, containing `start.stream_id` and the caller's number under `start.from` — mirror the real Telnyx media-streaming payload shape documented in `pipecat.serializers.telnyx`'s module docstring/tests if present in the installed package), calls `is_allowed_caller` on the caller number, and closes the connection immediately (without ever constructing a `TelnyxFrameSerializer` or forwarding audio) if the caller is not allowed.
+4. `jarvis.server`'s FastAPI `app` gains a `GET /health` route returning HTTP 200 with a JSON body containing `{"status": "ok"}`.
+
+### Deploy config (`deploy/jarvis.service`, `deploy/cloudflared.service`, `deploy/cloudflared.yml`, `jarvis/config.py`)
+5. `jarvis.config.load_config() -> Config` (a dataclass) reads every env var already documented in `.env.example` (`OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`, `JARVIS_TMUX_SESSION`, `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `TELNYX_ALLOWED_CALLER`, `JARVIS_PUBLIC_HOSTNAME`, `JARVIS_HOST`, `JARVIS_PORT`) with the exact same defaults `.env.example` documents, and exposes a `telnyx_configured: bool` property that is `True` only when both `TELNYX_API_KEY` and `TELNYX_ALLOWED_CALLER` are non-empty.
+6. `deploy/jarvis.service` is a systemd `--user` unit (`[Unit]`/`[Service]`/`[Install]` sections) whose `ExecStart` runs the FastAPI server via `uv run` and whose `[Service]` section sets `Environment=OLLAMA_KEEP_ALIVE=-1` (per the plan's latency-budget note) — a placeholder `WorkingDirectory=`/`ExecStart=` path is acceptable (the user fills in their real path), but the three section headers and the `OLLAMA_KEEP_ALIVE=-1` line must be present verbatim.
+7. `deploy/cloudflared.yml` is valid YAML with a top-level `tunnel:` key (placeholder value acceptable) and an `ingress:` list whose first entry's `hostname:` is a placeholder and whose `service:` points at `http://localhost:$JARVIS_PORT`'s default (`http://localhost:8000`), plus a final catch-all `ingress` entry (`service: http_status:404`, Cloudflare Tunnel's required terminator).
+8. `deploy/cloudflared.service` is a systemd `--user` unit running `cloudflared tunnel run` referencing `deploy/cloudflared.yml`'s path (placeholder acceptable).
+
+### Orpheus TTS adapter (`jarvis/tts/orpheus.py`)
+9. `speak(text: str, base_url: str | None = None) -> bytes` POSTs `{"input": text, "voice": <a default voice name>, "response_format": "wav"}` (OpenAI-compatible TTS request shape) to `f"{base_url or OLLAMA-independent default}/v1/audio/speech"` and returns the raw response body bytes. `text` containing a paralinguistic tag (e.g. `"<sigh> that's odd"`) is passed through to the request's `"input"` field byte-for-byte unmodified — `speak` never strips or rewrites tags.
+10. `realtime_factor(audio_duration_s: float, generation_time_s: float) -> float` returns `generation_time_s / audio_duration_s`. `speak_and_measure(text, base_url=None) -> tuple[bytes, float]` calls `speak`, times the call wall-clock, and returns `(audio_bytes, realtime_factor(<duration derived from the returned WAV's own header via the stdlib wave module>, <measured wall time>))`.
+11. `speak` raises `TimeoutError` (not a generic exception) if the HTTP call does not complete within a caller-supplied `timeout_s` (default 30.0) — the plan notes Orpheus is slower than realtime, so callers must be able to bound the wait.
+
+### Filler strategy + latency logging (`jarvis/fillers.py`, `jarvis/metrics.py`)
+12. `jarvis.fillers.FILLERS` is a `dict[str, list[str]]` covering the same 5 tool names as `jarvis.tools.registry.TOOL_SCHEMAS`, each mapping to **at least 2** distinct non-empty phrases (variety, so Jarvis doesn't repeat the same filler every time).
+13. `pick_filler(tool_name: str, rng: random.Random | None = None) -> str` returns one phrase from `FILLERS[tool_name]` (or a generic fallback phrase for an unrecognized `tool_name`, never raising `KeyError`), using `rng` if supplied (so a seeded `random.Random` makes the choice deterministic and testable) or the module's own randomness otherwise.
+14. `jarvis.metrics.LatencyLog` records named latency events: `record(event: str, seconds: float) -> None` appends an entry; `entries` (a list/tuple of `(event, seconds, timestamp)`) exposes them in insertion order, bounded to the most recent 100 (per the project's bounded-buffer memory posture, matching cascade A's `EventStore`). `timed(event: str) -> contextlib.AbstractContextManager` is a context manager that calls `record(event, <measured wall-clock seconds>)` on exit.
+
+## Inputs / Outputs / Constraints / Out of scope
+
+- Inputs: Telnyx media-stream WebSocket JSON events (fixture payloads in tests — no real Telnyx call in this cascade's automated tests), env vars (all placeholder-safe: absent/empty must never crash `load_config`, `is_allowed_caller`, or the `/ws/telnyx` route — they must fail closed / report unconfigured instead), a throwaway local HTTP server standing in for the llama.cpp/Orpheus server in tests (same pattern cascade A/B already use for hook/Ollama endpoints).
+- Outputs: a configured `TelnyxFrameSerializer`, HTTP/WS responses, a `Config` dataclass, deploy config files, TTS audio bytes, realtime-factor floats, filler strings, latency log entries.
+- Constraints: no real phone call, no real Cloudflare tunnel, no real Orpheus/llama.cpp server process in this cascade's automated tests. `deploy/*.service`/`deploy/cloudflared.yml` are validated for shape (required sections/keys/YAML validity), not deployed.
+- Out of scope for this cascade: the native iOS app (slice 9, out of all cascades per the plan), actually registering a Telnyx number or Cloudflare Tunnel (manual, by the user, outside any leaf), actually running an Orpheus model (the manual A/B smoke check).
+
+## Scale & Boundary Profile
+
+- **N typical / N peak:** one Telnyx call at a time typical (this is a single-user home assistant, not a call center) — `unbounded-unknown — assert growth only, no absolutes` for call concurrency, since nothing in this cascade's code imposes a data-structure-driven growth curve on it. `LatencyLog` holds ≤100 entries by construction (AC-14).
+- **Growth claim per hot path:** `is_allowed_caller`'s allow-list check is `linear_ish` in the number of configured allowed callers (expected to be 1-3, never a scale concern). `pick_filler`'s lookup is `sublinear` (dict + list-index, not a scan proportional to call count).
+- **Memory posture:** bounded-buffer — `LatencyLog` truncates to 100 entries (AC-14); no other new state in this cascade accumulates without bound.
+- **External call budget:** `speak` makes exactly one HTTP call per invocation (no retry loop). `/ws/telnyx` makes zero outbound HTTP calls itself (Telnyx audio flows over the WebSocket already established).
+
+## Bible Compliance
+
+- **Bible path:** `/home/westopoli/.claude/plans/i-ve-got-this-idea-zany-harp.md`
+- **Sections referenced:** Feasibility verdict (phone call transport); Architecture; Latency target; Process (Cascade C leaf table); Slices 7-8; Risks/open items (Telnyx hostname stability, TUI permission keys — out of this cascade's automated scope).
+- **Deliberate divergences:** The plan's slice 7 smoke check is "Siri 'call Jarvis' from the car over CarPlay" with a real Telnyx number and a real Cloudflare Tunnel — this cascade's automated ACs (1-8) instead validate the code and config *shape* against fixtures/placeholders, since no Telnyx account or tunnel hostname exists yet in this environment; the real end-to-end call is the cascade's manual smoke check, done by the user once they fill in `.env`'s Telnyx/Cloudflare fields. Similarly, slice 8's Orpheus realtime-factor check ("< 1.5 on the 3060 with qwen3 resident") requires a real running llama.cpp server with the Orpheus GGUF loaded; AC-9-11 make `speak`/`realtime_factor` correct and independently testable against a fixture HTTP server, but the actual < 1.5 measurement against real hardware is this cascade's manual smoke check, not a leaf AC — no GPU/model-download dependency belongs in the automated suite.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Jarvis voice assistant server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jarvis
+Environment=OLLAMA_KEEP_ALIVE=-1
+ExecStart=/usr/bin/env uv run jarvis
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

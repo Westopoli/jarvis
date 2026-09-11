@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel for Jarvis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --config /opt/jarvis/deploy/cloudflared.yml tunnel run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -53,7 +53,12 @@ class _NarratingProcessor(FrameProcessor):
 
 
 def build_pipeline(
-    transport, conversation, reader, interrupt_gate, llm_model: str = "qwen3:8b"
+    transport,
+    conversation,
+    reader,
+    interrupt_gate,
+    llm_model: str = "qwen3:8b",
+    tts_service=None,
 ) -> Pipeline:
     """Assemble ``transport``, ``conversation``, ``reader`` and
     ``interrupt_gate`` into a real Pipecat ``Pipeline`` (spec_lines 22,
@@ -64,9 +69,20 @@ def build_pipeline(
     every frame pushed into the transport, and every frame reaching its
     captured output, genuinely transits this ``Pipeline`` object rather than
     bypassing it.
+
+    ``tts_service`` is optional and defaults to ``None`` deliberately: a real
+    TTS service (e.g. ``jarvis.tts.kokoro.build_kokoro_tts_service()``)
+    downloads model files over the network on first use, which the
+    automated test suite must never trigger. Callers running the real
+    desktop voice loop pass a real service here; it is inserted into the
+    processor chain right after narration, consuming each ``TTSSpeakFrame``
+    and emitting real audio frames downstream. Tests (and the umbrella)
+    leave this ``None`` and get the pre-existing text-frame-only behavior
+    unchanged.
     """
     narrator = _NarratingProcessor(conversation, reader, interrupt_gate)
-    pipeline = Pipeline([narrator], source=transport.input(), sink=transport.output())
+    processors = [narrator] if tts_service is None else [narrator, tts_service]
+    pipeline = Pipeline(processors, source=transport.input(), sink=transport.output())
     # AC-9: the model argument must be threaded through, not silently
     # dropped -- observable on the returned Pipeline for callers/tests.
     pipeline.llm_model = llm_model

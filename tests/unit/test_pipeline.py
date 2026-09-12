@@ -217,3 +217,91 @@ def test_a_long_segment_without_the_wake_word_never_interrupts_narration():
 
     assert conversation.state is ConversationState.NARRATING
     assert len(transport.emitted_tts_text()) > before
+
+
+# ---------------------------------------------------------------------------
+# Real-transcript fallback (post-cascade follow-up): FakeTransport.push_transcript
+# always sets words/has_wake_word on the frame's metadata, so a real
+# TranscriptionFrame from an actual STT service -- which carries neither --
+# was never exercised. _NarratingProcessor must compute both from frame.text
+# in that case, since jarvis/run_desktop.py wires a real WhisperSTTService
+# whose frames won't have this test-only metadata.
+# ---------------------------------------------------------------------------
+
+
+def _push_bare_transcript(transport, text: str) -> None:
+    """Push a real-shaped TranscriptionFrame with no words/has_wake_word
+    metadata, standing in for actual STT output (unlike
+    FakeTransport.push_transcript, which always sets both)."""
+    import asyncio
+    import time
+
+    from pipecat.frames.frames import TranscriptionFrame
+    from pipecat.processors.frame_processor import FrameDirection
+
+    frame = TranscriptionFrame(text=text, user_id="fake-user", timestamp=str(time.time()))
+    asyncio.run(transport._input.queue_frame(frame, FrameDirection.DOWNSTREAM))
+
+
+def test_narration_advances_from_a_bare_transcript_frame_with_no_metadata():
+    """A real STT frame (no words/has_wake_word metadata) must still be able
+    to tick narration forward on a sub-threshold utterance."""
+    transport, conversation, _pipeline = _narrating()
+
+    before = len(transport.emitted_tts_text())
+    _push_bare_transcript(transport, "mm hmm")  # 2 words, below MIN_WORDS -- no interrupt
+
+    assert conversation.state is ConversationState.NARRATING
+    assert len(transport.emitted_tts_text()) > before
+
+
+def test_bare_transcript_with_wake_word_text_interrupts_narration():
+    """A real STT frame whose text contains the wake word, with enough
+    words, must still interrupt -- computed from frame.text, not metadata."""
+    transport = FakeTransport()
+    conversation = Conversation(active_tab=1, min_words=MIN_WORDS)
+    reader = Reader(NARRATION)
+    gate = InterruptGate(
+        vad_params=VAD,
+        min_words=MIN_WORDS,
+        wake_word_detector=lambda text: "jarvis" in text.lower(),
+    )
+    build_pipeline(transport, conversation, reader, gate)
+    conversation.speech_start()
+    conversation.llm_intent("narrate")
+    assert conversation.state is ConversationState.NARRATING
+
+    _push_bare_transcript(transport, "jarvis stop reading that")  # 4 words, has "jarvis"
+
+    assert conversation.state is not ConversationState.NARRATING
+
+
+def test_build_pipeline_accepts_a_custom_wake_word_detector_for_bare_transcripts():
+    """A caller-supplied wake_word_detector (e.g. run_desktop.py's own) must
+    be what a bare (metadata-free) transcript frame is checked against, not
+    just the module's default "jarvis" substring check."""
+    transport = FakeTransport()
+    conversation = Conversation(active_tab=1, min_words=MIN_WORDS)
+    reader = Reader(NARRATION)
+    gate = InterruptGate(
+        vad_params=VAD,
+        min_words=MIN_WORDS,
+        wake_word_detector=lambda text: "computer" in text.lower(),
+    )
+    build_pipeline(
+        transport,
+        conversation,
+        reader,
+        gate,
+        wake_word_detector=lambda text: "computer" in text.lower(),
+    )
+    conversation.speech_start()
+    conversation.llm_intent("narrate")
+
+    # "jarvis" alone would not match this custom detector -- confirms the
+    # custom callable, not the hardcoded default, decided the outcome.
+    _push_bare_transcript(transport, "jarvis please stop now")
+    assert conversation.state is ConversationState.NARRATING
+
+    _push_bare_transcript(transport, "computer please stop now")
+    assert conversation.state is not ConversationState.NARRATING

@@ -1,0 +1,15 @@
+[Unit]
+Description=Tailscale Funnel for Jarvis
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/tailscale funnel --bg 8000
+ExecStop=/usr/bin/tailscale funnel --https=443 off
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

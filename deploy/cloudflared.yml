@@ -1,8 +1,0 @@
-tunnel: REPLACE_WITH_TUNNEL_ID
-credentials-file: /opt/jarvis/.cloudflared/REPLACE_WITH_TUNNEL_ID.json
-
-ingress:
-  -
-    hostname: jarvis.example.com
-    service: http://localhost:8000
-  - service: http_status:404

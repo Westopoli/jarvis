@@ -1,7 +1,7 @@
 # spec: specs/cascade-c.md::Acceptance criteria::AC-5..8
 """Tests for the environment config loader and the deploy files (leaf-02,
-AC 5-8): ``jarvis/config.py``, ``deploy/jarvis.service``,
-``deploy/cloudflared.yml`` and ``deploy/cloudflared.service``.
+AC 5-8): ``jarvis/config.py``, ``deploy/jarvis.service``, and
+``deploy/tailscale-funnel.service``.
 
 Three deliberate choices:
 
@@ -9,7 +9,7 @@ Three deliberate choices:
   says "the exact same defaults ``.env.example`` documents", so that file is
   the oracle, not the implementation.
 * Every env var is **deleted** before the default-reading test, because the
-  placeholder state (no ``.env`` loaded, Telnyx/Cloudflare fields blank) is
+  placeholder state (no ``.env`` loaded, Telnyx/hostname fields blank) is
   the state this cascade actually ships in (spec L5/L33).
 * The systemd units are checked by *section-aware* structure — the unit text
   is split into ``[Section]`` blocks and keys are looked up inside the right
@@ -185,80 +185,32 @@ def test_jarvis_unit_pins_ollama_keep_alive_in_the_service_section():
 
 
 # --------------------------------------------------------------------------
-# AC-7: deploy/cloudflared.yml
+# AC-7/AC-8: deploy/tailscale-funnel.service
+#
+# Tailscale Funnel needs no separate YAML config the way cloudflared did —
+# the exposed port and hostname are driven entirely by the `tailscale
+# funnel` CLI invocation plus the already-running `tailscaled` daemon's own
+# state, so one systemd unit replaces cloudflared.yml + cloudflared.service.
 # --------------------------------------------------------------------------
 
-def test_cloudflared_yml_declares_tunnel_and_ingress_at_the_top_level():
-    text = (DEPLOY / "cloudflared.yml").read_text()
-
-    assert (
-        bool(re.search(r"^tunnel:", text, re.M)),
-        bool(re.search(r"^ingress:", text, re.M)),
-    ) == (True, True)
-
-
-def test_cloudflared_yml_points_the_first_ingress_rule_at_the_default_port():
-    text = (DEPLOY / "cloudflared.yml").read_text()
-
-    assert re.search(r"^\s*-?\s*service:\s*http://localhost:8000\s*$", text, re.M)
-
-
-def test_cloudflared_yml_ends_with_the_required_catch_all():
-    text = (DEPLOY / "cloudflared.yml").read_text()
-
-    assert re.search(r"^\s*-?\s*service:\s*http_status:404\s*$", text, re.M)
-
-
-def test_cloudflared_yml_catch_all_follows_the_first_ingress_rule_unconditionally():
-    """AC-7's ordering requirement ("a final catch-all"), asserted on the raw
-    text so it runs even when PyYAML is unavailable (the parsed-shape test
-    below is gated behind ``pytest.importorskip("yaml")`` and so cannot be
-    the only check for ordering)."""
-    text = (DEPLOY / "cloudflared.yml").read_text()
-
-    first_hostname = re.search(r"^\s*hostname:.*$", text, re.M)
-    first_service = re.search(r"^\s*-?\s*service:\s*http://localhost:8000\s*$", text, re.M)
-    catch_all = re.search(r"^\s*-?\s*service:\s*http_status:404\s*$", text, re.M)
-
-    assert first_hostname and first_service and catch_all
-    assert catch_all.start() > max(first_hostname.start(), first_service.start())
-
-
-def test_cloudflared_yml_parses_as_yaml_with_the_expected_ingress_shape():
-    yaml = pytest.importorskip("yaml")
-    document = yaml.safe_load((DEPLOY / "cloudflared.yml").read_text())
-
-    assert isinstance(document, dict)
-    assert isinstance(document.get("tunnel"), (str, int)) and str(document["tunnel"]).strip()
-    ingress = document.get("ingress")
-    assert isinstance(ingress, list) and len(ingress) >= 2
-    assert (
-        ingress[0].get("service"),
-        bool(str(ingress[0].get("hostname") or "").strip()),
-        ingress[-1].get("service"),
-        "hostname" in ingress[-1],
-    ) == ("http://localhost:8000", True, "http_status:404", False)
-
-
-# --------------------------------------------------------------------------
-# AC-8: deploy/cloudflared.service
-# --------------------------------------------------------------------------
-
-def test_cloudflared_unit_has_the_three_systemd_sections():
-    sections = _unit_sections((DEPLOY / "cloudflared.service").read_text())
+def test_tailscale_funnel_unit_has_the_three_systemd_sections():
+    sections = _unit_sections((DEPLOY / "tailscale-funnel.service").read_text())
 
     assert set(sections) >= {"Unit", "Service", "Install"}
 
 
-def test_cloudflared_unit_runs_the_tunnel():
-    service = _unit_sections((DEPLOY / "cloudflared.service").read_text())["Service"]
+def test_tailscale_funnel_unit_starts_the_funnel_on_the_default_port():
+    service = _unit_sections((DEPLOY / "tailscale-funnel.service").read_text())["Service"]
 
     assert any(
-        re.match(r"^ExecStart=.*\bcloudflared\b.*\btunnel\s+run\b", line) for line in service
+        re.match(r"^ExecStart=.*\btailscale\b.*\bfunnel\b.*\b8000\b", line) for line in service
     )
 
 
-def test_cloudflared_unit_references_the_tunnel_config_file():
-    service = _unit_sections((DEPLOY / "cloudflared.service").read_text())["Service"]
+def test_tailscale_funnel_unit_stays_active_after_the_oneshot_command_exits():
+    """`tailscale funnel --bg` backgrounds itself and exits; RemainAfterExit
+    is what keeps systemd reporting the unit as active rather than failed."""
+    service = _unit_sections((DEPLOY / "tailscale-funnel.service").read_text())["Service"]
 
-    assert any("cloudflared.yml" in line for line in service)
+    assert any(re.match(r"^Type=oneshot\s*$", line) for line in service)
+    assert any(re.match(r"^RemainAfterExit=yes\s*$", line) for line in service)

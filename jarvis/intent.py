@@ -32,7 +32,9 @@ def _chat(model: str, system: str, user: str) -> str:
         ],
         "stream": False,
         "options": {"temperature": 0},
-        "temperature": 0,
+        # qwen3 otherwise emits a <think> block before the one-word answer,
+        # adding seconds of latency to every classification.
+        "think": False,
     }
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(

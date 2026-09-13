@@ -61,41 +61,17 @@ def test_classify_intent_output_drives_real_conversation_into_drafting():
     assert convo.state == ConversationState.DRAFTING
 
 
-def test_pipeline_composes_real_conversation_reader_and_gate_via_fake_transport():
+def test_pipeline_builds_with_real_session_and_narrator():
+    """Pipeline assembly now composes Pipecat turn strategies + the Narrator;
+    the gating behaviour itself is covered in tests/unit/test_pipeline.py."""
     from jarvis.pipeline import build_pipeline
-    from jarvis.conversation import Conversation
-    from jarvis.reader import Reader
-    from jarvis.audio.gate import InterruptGate
-    from jarvis.types import ConversationState, VADParams
-    from tests.harness.fake_transport import FakeTransport
+    from jarvis.session import JarvisSession
+    from tests.harness.frame_capture import CaptureTransport
 
-    transport = FakeTransport()
-    convo = Conversation(active_tab=1)
-    convo.speech_start()
-    convo.llm_intent("narrate")
-    reader = Reader("First narrated sentence. Second narrated sentence.")
-    gate = InterruptGate(
-        vad_params=VADParams(confidence=0.7, start_secs=0.3, stop_secs=0.8, min_volume=0.6),
-        min_words=3,
-        wake_word_detector=lambda text: "jarvis" in text.lower(),
-    )
-
-    pipeline = build_pipeline(transport, convo, reader, gate)
-    assert pipeline is not None
-
-    # AC-10 asks for "a sequence of transcript-text frames" driving IDLE
-    # through NARRATING to an interrupt — a single interrupting frame with
-    # no prior narration tick has nothing to interrupt yet. First tick: a
-    # sub-threshold segment (word count below the gate's minimum) neither
-    # interrupts nor exits NARRATING, so it advances narration by one
-    # sentence. Second tick: the wake-word segment interrupts.
-    transport.push_transcript("um", words=1, has_wake_word=False)
-    transport.push_transcript("jarvis stop reading that", words=4, has_wake_word=True)
-
-    emitted = transport.emitted_tts_text()
-    assert len(emitted) >= 1
-    assert any("narrated sentence" in t for t in emitted)
-    assert convo.state != ConversationState.NARRATING
+    session = JarvisSession(active_tab=1)
+    built = build_pipeline(CaptureTransport(), session, vad=False)
+    assert built.pipeline is not None
+    assert session.narrator is built.narrator
 
 
 @pytest.mark.slow

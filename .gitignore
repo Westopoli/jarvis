@@ -7,3 +7,8 @@ __pycache__/
 .env
 .swarm/
 *.egg-info/
+*.log
+.claude/
+.env.*
+!.env.example
+tests/fixtures/audio/*.wav

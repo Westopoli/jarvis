@@ -1,163 +1,155 @@
-"""Real desktop voice loop for Jarvis (plan slice 6's manual smoke check).
+"""Desktop voice loop: mic + speaker on this machine, everything else real.
 
-Wires the real ``LocalAudioTransport`` (mic + speaker), Silero VAD, a real
-Whisper STT service, real Kokoro TTS (``bm_lewis``), and cascade A's
-``Conversation``/``Reader``/``InterruptGate`` into the tested pipeline from
-``jarvis.pipeline.build_pipeline``.
-
-Run it:
-
-    uv sync --extra audio --extra audio-local
+    uv sync --extra audio --extra audio-local --extra server
     uv run python -m jarvis.run_desktop
 
-Needs, one-time: ``sudo apt-get install -y portaudio19-dev`` (for pyaudio,
-already done per project notes) and network access on first run to download
-Kokoro's ONNX model files (~326MB) and the Whisper model from Hugging Face.
-Both are cached afterwards (``~/.cache/pipecat/kokoro-onnx/`` and the
-faster-whisper/huggingface cache) and every later run is offline.
+Say "Jarvis" to wake it, then talk: "what tabs are open", "switch to tab
+four", "read it", "update me", "tell it to use pydantic", "send".
 
-GPU note: faster-whisper's ctranslate2 backend needs cuBLAS + cuDNN (CUDA
-12) to run on the GPU. This machine has neither on the system library path
--- only Ollama's own private copies, which ctranslate2 can't see. The
-``audio-local`` extra installs the standalone ``nvidia-cublas-cu12``/
-``nvidia-cudnn-cu12`` wheels for this; the ``_preload_cuda_libs()`` call
-below loads them with ``ctypes``/``RTLD_GLOBAL`` before any pipecat/whisper
-import, so ctranslate2's own later ``dlopen`` finds the symbols already
-resolved -- no ``LD_LIBRARY_PATH`` needed. Confirmed working: STT of a 6.9s
-clip took 0.62s on GPU (vs. multiple seconds on CPU) -- comfortably inside
-the plan's latency budget.
+Options:
+  --say "jarvis, what tabs are open"   inject that transcript ~3 s after start
+                                       (repeatable) to exercise the loop
+                                       without a microphone
+  --no-server                          don't host the hook ingest server
+                                       in-process (no proactive announcements)
 
-Current scope: on start, Jarvis immediately narrates ``NARRATION_TEXT``
-below. Say "jarvis" plus a few more words to interrupt it -- the real
-``InterruptGate``/``Conversation`` rules (cascade A) decide whether that
-counts. Talking without the wake word, or too few words, does not interrupt.
-
-NOT yet wired here: routing ordinary speech through
-``jarvis.intent.classify_intent`` + ``jarvis.tools.registry.dispatch`` while
-IDLE/LISTENING (e.g. asking "what tabs are open" and getting dispatched to a
-real tool call) -- that loop is proven working as text-only in
-``jarvis/repl.py`` (cascade B) but has not been integrated into this live
-audio pipeline. That integration is the natural next slice, not attempted
-here blind and unverified against real hardware.
+The hook ingest server (``/events``) runs in-process on ``JARVIS_PORT`` so
+Claude Code's Stop/Notification hooks can wake Jarvis: "Tab two has
+finished. Want me to read it?"
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
-import ctypes
-import glob
-import importlib.util
+import os
+import time
 
+from loguru import logger
 
-def _preload_cuda_libs() -> None:
-    """Load the nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels' shared
-    libraries with RTLD_GLOBAL before ctranslate2 (via faster-whisper, via
-    WhisperSTTService) ever tries to dlopen libcublas/libcudnn itself.
-    No-ops quietly if the packages aren't installed (e.g. CPU-only use) --
-    WhisperSTTService's own device="cuda" attempt will then fail with a
-    clear error instead, per its own error path."""
-    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
-        spec = importlib.util.find_spec(pkg)
-        if spec is None or not spec.submodule_search_locations:
-            continue
-        for lib_dir in spec.submodule_search_locations:
-            for path in sorted(glob.glob(f"{lib_dir}/lib/*.so*")):
-                try:
-                    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
-                except OSError:
-                    pass
+from jarvis import cuda_libs
 
+cuda_libs.preload()  # must precede the faster-whisper import below
 
-_preload_cuda_libs()
-
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams as PipecatVADParams
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.services.whisper.stt import WhisperSTTService
-from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
-
-from jarvis.audio.gate import InterruptGate
-from jarvis.config import load_config
-from jarvis.conversation import Conversation
-from jarvis.pipeline import build_pipeline
-from jarvis.reader import Reader
-from jarvis.tts.kokoro import build_kokoro_tts_service
-from jarvis.types import VADParams
-
-# Real Whisper model id -- Systran's faster-whisper conversion of
-# distil-whisper large-v3, matching the plan's "distil-large-v3" choice.
-# Downloaded from Hugging Face on first use.
-WHISPER_MODEL = "Systran/faster-distil-whisper-large-v3"
-
-NARRATION_TEXT = (
-    "Hello, I'm Jarvis. This is a manual smoke test of the desktop voice "
-    "loop. Say my name plus a few words if you'd like to interrupt me."
+from pipecat.frames.frames import TranscriptionFrame, TTSSpeakFrame  # noqa: E402
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker  # noqa: E402
+from pipecat.services.ollama.llm import OLLamaLLMService  # noqa: E402
+from pipecat.services.whisper.stt import WhisperSTTService  # noqa: E402
+from pipecat.transports.local.audio import (  # noqa: E402
+    LocalAudioTransport,
+    LocalAudioTransportParams,
 )
+from pipecat.workers.runner import WorkerRunner  # noqa: E402
+
+from jarvis.announcer import Announcer  # noqa: E402
+from jarvis.config import load_config  # noqa: E402
+from jarvis.pipeline import TurnConfig, build_pipeline  # noqa: E402
+from jarvis.server import HOST, create_app  # noqa: E402
+from jarvis.session import JarvisSession  # noqa: E402
+from jarvis.tts.kokoro import build_kokoro_tts_service  # noqa: E402
+
+WHISPER_MODEL = "Systran/faster-distil-whisper-large-v3"
+GREETING = "Jarvis online."
+ANNOUNCE_POLL_SECS = 2.0
 
 
-def _wake_word_detector(text: str) -> bool:
-    """Text-based wake-word check -- the same simplification cascades A/B
-    already use in place of a real audio-level model (openWakeWord)."""
-    return "jarvis" in text.lower()
+def build_services(cfg):
+    stt = WhisperSTTService(
+        settings=WhisperSTTService.Settings(model=WHISPER_MODEL, no_speech_prob=0.4),
+        device="auto",
+        compute_type="int8",
+    )
+    llm = OLLamaLLMService(
+        base_url=cfg.ollama_host.rstrip("/") + "/v1",
+        settings=OLLamaLLMService.Settings(
+            model=cfg.ollama_model,
+            temperature=0.2,
+            extra={"extra_body": {"think": False}},
+        ),
+    )
+    tts = build_kokoro_tts_service()
+    return stt, llm, tts
 
 
-def build_desktop_pipeline():
-    """Assemble the real desktop pipeline. Touches real audio hardware and
-    may download model files over the network -- never call from a test."""
+async def _serve_hooks(app, port: int) -> None:
+    import uvicorn
+
+    config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+async def _announce_loop(worker: PipelineWorker, announcer: Announcer) -> None:
+    while True:
+        await asyncio.sleep(ANNOUNCE_POLL_SECS)
+        try:
+            for sentence in announcer.poll():
+                logger.info(f"announce: {sentence}")
+                await worker.queue_frame(TTSSpeakFrame(text=sentence))
+        except Exception as exc:  # tmux gone, etc. Keep the loop alive.
+            logger.warning(f"announcer: {exc}")
+
+
+async def _scripted_input(worker: PipelineWorker, lines: list[str]) -> None:
+    await asyncio.sleep(3.0)
+    for line in lines:
+        logger.info(f"scripted transcript: {line!r}")
+        await worker.queue_frame(
+            TranscriptionFrame(text=line, user_id="script", timestamp=str(time.time()))
+        )
+        await asyncio.sleep(8.0)
+
+
+async def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--say", action="append", default=[], help="inject a transcript")
+    parser.add_argument("--no-server", action="store_true")
+    parser.add_argument("--wake-timeout", type=float, default=20.0)
+    parser.add_argument("--min-words", type=int, default=3)
+    args = parser.parse_args(argv)
+
     cfg = load_config()
-
-    vad_params = VADParams(confidence=0.7, start_secs=0.3, stop_secs=0.8, min_volume=0.6)
+    session = JarvisSession(tmux_session=cfg.jarvis_tmux_session)
+    stt, llm, tts = build_services(cfg)
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     )
-    vad_processor = VADProcessor(
-        vad_analyzer=SileroVADAnalyzer(
-            params=PipecatVADParams(
-                confidence=vad_params.confidence,
-                start_secs=vad_params.start_secs,
-                stop_secs=vad_params.stop_secs,
-                min_volume=vad_params.min_volume,
-            )
-        )
-    )
-    stt = WhisperSTTService(
-        settings=WhisperSTTService.Settings(model=WHISPER_MODEL, no_speech_prob=0.4),
-        device="cuda",
-        compute_type="int8_float16",
-    )
-    tts = build_kokoro_tts_service()
-
-    conversation = Conversation(active_tab=None, min_words=3)
-    conversation.speech_start()
-    conversation.llm_intent("narrate")
-
-    reader = Reader(NARRATION_TEXT)
-    gate = InterruptGate(
-        vad_params=vad_params, min_words=3, wake_word_detector=_wake_word_detector
-    )
-
-    pipeline = build_pipeline(
+    built = build_pipeline(
         transport,
-        conversation,
-        reader,
-        gate,
-        llm_model=cfg.ollama_model,
-        vad_processor=vad_processor,
-        stt_service=stt,
-        tts_service=tts,
-        wake_word_detector=_wake_word_detector,
+        session,
+        llm=llm,
+        stt=stt,
+        tts=tts,
+        config=TurnConfig(wake_timeout_secs=args.wake_timeout, min_words=args.min_words),
     )
-    return pipeline
 
+    worker = PipelineWorker(
+        built.pipeline,
+        params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000),
+        idle_timeout_secs=None,
+    )
 
-async def main() -> None:
-    pipeline = build_desktop_pipeline()
-    worker = PipelineWorker(pipeline, params=PipelineParams(audio_out_sample_rate=24000))
-    runner = PipelineRunner()
-    await runner.run(worker)
+    background: list[asyncio.Task] = []
+    if not args.no_server:
+        app = create_app(session.event_store)
+        background.append(asyncio.create_task(_serve_hooks(app, cfg.jarvis_port)))
+        background.append(asyncio.create_task(_announce_loop(worker, Announcer(session))))
+    if args.say:
+        background.append(asyncio.create_task(_scripted_input(worker, args.say)))
+
+    async def greet() -> None:
+        await asyncio.sleep(1.0)
+        await worker.queue_frame(TTSSpeakFrame(text=GREETING))
+
+    background.append(asyncio.create_task(greet()))
+
+    try:
+        await WorkerRunner().run(worker)
+    finally:
+        for task in background:
+            task.cancel()
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("OLLAMA_KEEP_ALIVE", "-1")
     asyncio.run(main())

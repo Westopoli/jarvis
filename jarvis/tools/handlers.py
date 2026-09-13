@@ -1,0 +1,286 @@
+"""Pipecat function-call handlers: the tools the LLM can invoke.
+
+``build_tools(session)`` returns ``FunctionSchema`` objects whose handlers
+close over a ``JarvisSession``. Put them on the ``LLMContext`` and Pipecat
+registers them with the LLM service automatically.
+
+Design rules baked in here (not left to the prompt):
+
+- Nothing is ever typed into a tmux pane in one step. ``stage_prompt``
+  stores a draft; ``send_staged_prompt`` sends it only if the *user's* most
+  recent utterance in the context contains a confirmation word.
+- ``answer_permission(allow=True)`` has the same confirmation guard.
+- Verbatim reading goes through the ``Narrator`` (sentence cursor, resumable)
+  and tells the LLM not to respond, so what you hear is the real text.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Callable
+
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.frames.frames import FunctionCallResultProperties
+
+from jarvis.events import claude_summary
+from jarvis.session import JarvisSession, StagedPrompt
+from jarvis.tools import tmux as tmux_tools
+
+CONFIRM_WORDS = ("send", "yes", "go ahead", "confirm", "do it", "allow", "approve")
+_MAX_SUMMARY_CHARS = 3000
+
+
+def _latest_user_text(context: Any) -> str:
+    """Text of the most recent user message in the LLM context, or ''."""
+    messages = getattr(context, "messages", None) or []
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            )
+        return str(content)
+    return ""
+
+
+def user_confirmed(context: Any) -> bool:
+    text = re.sub(r"[^\w\s]", " ", _latest_user_text(context).lower())
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in CONFIRM_WORDS)
+
+
+def _resolve_target_tab(session: JarvisSession, arguments: dict) -> int | None:
+    tab = arguments.get("tab")
+    if tab is None or str(tab).strip().lower() in ("", "active", "current", "this", "none"):
+        return session.active_tab
+    if isinstance(tab, int):
+        return tab
+    return tmux_tools.resolve_tab(str(tab), session=session.tmux_session)
+
+
+def _window_for(session: JarvisSession, tab: int):
+    for window in tmux_tools.tmux_list(session=session.tmux_session):
+        if window.index == tab:
+            return window
+    return None
+
+
+def build_tools(session: JarvisSession) -> list[FunctionSchema]:
+    """Return the tool schemas, with handlers bound to ``session``."""
+
+    async def list_tabs(params) -> None:
+        windows = tmux_tools.tmux_list(session=session.tmux_session)
+        await params.result_callback(
+            {
+                "active_tab": session.active_tab,
+                "tabs": [
+                    {"index": w.index, "name": w.name, "command": w.pane_command}
+                    for w in windows
+                ],
+            }
+        )
+
+    async def switch_tab(params) -> None:
+        query = str(params.arguments.get("query", ""))
+        tab = tmux_tools.resolve_tab(query, session=session.tmux_session)
+        if tab is None:
+            await params.result_callback({"error": f"no tab matches {query!r}"})
+            return
+        session.active_tab = tab
+        window = _window_for(session, tab)
+        await params.result_callback(
+            {"active_tab": tab, "name": window.name if window else None}
+        )
+
+    async def read_tab(params) -> None:
+        tab = _resolve_target_tab(session, params.arguments)
+        if tab is None:
+            await params.result_callback({"error": "no active tab; ask which tab"})
+            return
+        text = claude_summary(tab, session.event_store, session=session.tmux_session)
+        if session.narrator is None:
+            await params.result_callback({"tab": tab, "text": text[:_MAX_SUMMARY_CHARS]})
+            return
+        window = _window_for(session, tab)
+        lead = f"Tab {tab}, {window.name}." if window else f"Tab {tab}."
+        await session.narrator.begin(f"{lead} {text}")
+        await params.result_callback(
+            {"status": "reading aloud", "tab": tab},
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+
+    async def summarize_tab(params) -> None:
+        tab = _resolve_target_tab(session, params.arguments)
+        if tab is None:
+            await params.result_callback({"error": "no active tab; ask which tab"})
+            return
+        text = claude_summary(tab, session.event_store, session=session.tmux_session)
+        await params.result_callback(
+            {
+                "tab": tab,
+                "latest_output": text[-_MAX_SUMMARY_CHARS:],
+                "instruction": "Summarise this for a driver in at most three short sentences.",
+            }
+        )
+
+    async def stage_prompt(params) -> None:
+        tab = _resolve_target_tab(session, params.arguments)
+        text = str(params.arguments.get("text", "")).strip()
+        if tab is None:
+            await params.result_callback({"error": "no active tab; ask which tab"})
+            return
+        if not text:
+            await params.result_callback({"error": "empty prompt"})
+            return
+        session.staged = StagedPrompt(tab=tab, text=text)
+        await params.result_callback(
+            {
+                "staged": {"tab": tab, "text": text},
+                "instruction": (
+                    "Read the staged text back to the user word for word, then ask "
+                    "them to say 'send' to confirm. Do not call send_staged_prompt "
+                    "until they do."
+                ),
+            }
+        )
+
+    async def send_staged_prompt(params) -> None:
+        staged = session.staged
+        if staged is None:
+            await params.result_callback({"error": "nothing staged"})
+            return
+        if not user_confirmed(params.context):
+            await params.result_callback(
+                {"error": "user has not said a confirmation word yet; ask them to say 'send'"}
+            )
+            return
+        try:
+            tmux_tools.tmux_send(
+                staged.tab, staged.text, confirmed=True, session=session.tmux_session
+            )
+        except PermissionError as exc:
+            await params.result_callback({"error": str(exc)})
+            return
+        session.staged = None
+        await params.result_callback({"sent": True, "tab": staged.tab})
+
+    async def discard_staged_prompt(params) -> None:
+        had = session.staged is not None
+        session.staged = None
+        await params.result_callback({"discarded": had})
+
+    async def resume_reading(params) -> None:
+        if session.narrator is None or not await session.narrator.resume():
+            await params.result_callback({"error": "nothing to resume"})
+            return
+        await params.result_callback(
+            {"status": "resumed"}, properties=FunctionCallResultProperties(run_llm=False)
+        )
+
+    async def skip_sentence(params) -> None:
+        if session.narrator is None or not await session.narrator.skip():
+            await params.result_callback({"error": "nothing to skip"})
+            return
+        await params.result_callback(
+            {"status": "skipped"}, properties=FunctionCallResultProperties(run_llm=False)
+        )
+
+    async def stop_reading(params) -> None:
+        if session.narrator is not None:
+            await session.narrator.stop()
+        await params.result_callback({"status": "stopped"})
+
+    async def pending_permissions(params) -> None:
+        windows = tmux_tools.tmux_list(session=session.tmux_session)
+        pending = []
+        for session_id in session.event_store.session_ids():
+            event = session.event_store.get(session_id)
+            if event is None or not event.pending_permission:
+                continue
+            tab = session.event_store.tab_for_session(session_id, windows)
+            pending.append({"tab": tab, "prompt": event.pending_permission})
+        await params.result_callback({"pending": pending})
+
+    async def answer_permission(params) -> None:
+        tab = _resolve_target_tab(session, params.arguments)
+        allow = bool(params.arguments.get("allow", False))
+        if tab is None:
+            await params.result_callback({"error": "no active tab; ask which tab"})
+            return
+        if allow and not user_confirmed(params.context):
+            await params.result_callback(
+                {"error": "user has not explicitly approved; ask them to say 'allow'"}
+            )
+            return
+        tmux_tools.tmux_send_key(tab, "Enter" if allow else "Escape", session=session.tmux_session)
+        await params.result_callback({"tab": tab, "answered": "allow" if allow else "deny"})
+
+    tab_property = {
+        "tab": {
+            "type": "string",
+            "description": "Tab number or name, only if the user named one. Otherwise omit this argument entirely.",
+        }
+    }
+
+    return [
+        _schema("list_tabs", "List the open tmux tabs (windows) and which one is active.", {}, [], list_tabs),
+        _schema(
+            "switch_tab",
+            "Make a tab the active one. Accepts a tab number or a name/directory fragment.",
+            {"query": {"type": "string", "description": "Tab number or name fragment."}},
+            ["query"],
+            switch_tab,
+        ),
+        _schema(
+            "read_tab",
+            "Read the latest Claude output of a tab aloud, word for word. Use when the user asks to read, read out, or hear what it said.",
+            tab_property,
+            [],
+            read_tab,
+        ),
+        _schema(
+            "summarize_tab",
+            "Fetch the latest Claude output of a tab so you can summarise it briefly. Use for 'update me', 'what's going on', 'status'.",
+            tab_property,
+            [],
+            summarize_tab,
+        ),
+        _schema(
+            "stage_prompt",
+            "Stage a prompt the user dictated for Claude. Does NOT send it. Call this when the user says 'tell it to ...', 'reply that ...', or dictates instructions.",
+            {"text": {"type": "string", "description": "The prompt text, cleaned up but preserving every technical term."}, **tab_property},
+            ["text"],
+            stage_prompt,
+        ),
+        _schema(
+            "send_staged_prompt",
+            "Send the staged prompt into its tab. Only call after the user explicitly said 'send' or 'yes'.",
+            {},
+            [],
+            send_staged_prompt,
+        ),
+        _schema("discard_staged_prompt", "Throw away the staged prompt.", {}, [], discard_staged_prompt),
+        _schema("resume_reading", "Continue reading from where the last reading was interrupted.", {}, [], resume_reading),
+        _schema("skip_sentence", "Skip the current sentence of the reading and continue.", {}, [], skip_sentence),
+        _schema("stop_reading", "Stop the current reading.", {}, [], stop_reading),
+        _schema("pending_permissions", "List tabs where Claude is waiting for a permission answer.", {}, [], pending_permissions),
+        _schema(
+            "answer_permission",
+            "Answer a Claude permission prompt in a tab. allow=true presses Enter (accept), allow=false presses Escape (reject). Only allow after the user explicitly says so.",
+            {"allow": {"type": "boolean", "description": "True to allow, false to reject."}, **tab_property},
+            ["allow"],
+            answer_permission,
+        ),
+    ]
+
+
+def _schema(
+    name: str, description: str, properties: dict, required: list[str], handler: Callable
+) -> FunctionSchema:
+    return FunctionSchema(
+        name=name,
+        description=description,
+        properties=properties,
+        required=required,
+        handler=handler,
+    )

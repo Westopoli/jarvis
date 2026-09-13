@@ -8,6 +8,8 @@ compute wake-word detection, VAD, or intent classification itself.
 """
 from __future__ import annotations
 
+import re
+
 from jarvis.types import ConversationState, SendPrompt, TranscriptEvent
 
 _CONFIRM_WORDS = ("send", "yes")
@@ -23,7 +25,8 @@ _INTENT_TARGETS = {
 
 
 def _norm(text: str) -> str:
-    return text.strip().lower()
+    """Lowercase and strip punctuation so STT output like "Send." matches."""
+    return re.sub(r"[^\w\s]", "", text).strip().lower()
 
 
 class Conversation:

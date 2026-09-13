@@ -145,3 +145,20 @@ def tmux_send(
     target = f"{session}:{tab}"
     subprocess.run(["tmux", "send-keys", "-t", target, "-l", text], check=True)
     subprocess.run(["tmux", "send-keys", "-t", target, "Enter"], check=True)
+
+
+# Key names tmux_send_key accepts (tmux send-keys key names).
+_ALLOWED_KEYS = ("Enter", "Escape", "Up", "Down", "Tab", "C-c", "1", "2", "3")
+
+
+def tmux_send_key(tab: int, key: str, session: str | None = None) -> None:
+    """Send a single named key (e.g. ``Enter``/``Escape``) to a pane.
+
+    Used to answer Claude Code permission dialogs. Only a small allow-list of
+    key names is accepted so a mis-transcribed word can never become an
+    arbitrary keystroke.
+    """
+    if key not in _ALLOWED_KEYS:
+        raise ValueError(f"tmux_send_key refused: {key!r} not in {_ALLOWED_KEYS}")
+    session = _resolve_session(session)
+    subprocess.run(["tmux", "send-keys", "-t", f"{session}:{tab}", key], check=True)

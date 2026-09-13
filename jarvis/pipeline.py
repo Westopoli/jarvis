@@ -1,119 +1,153 @@
-# spec: specs/cascade-b.md::Acceptance criteria::AC-9..10
-"""Pipeline assembly: wires a transport through cascade A's real
-``Conversation``, ``Reader`` and ``InterruptGate`` objects inside a real
-``pipecat.pipeline.pipeline.Pipeline`` (leaf-03, spec_lines 22-23).
+"""Pipeline assembly: transport -> STT -> user aggregator -> LLM -> narrator
+-> TTS -> transport -> assistant aggregator.
+
+Barge-in policy lives in Pipecat's turn strategies, not in custom code:
+
+- ``WakePhraseUserTurnStartStrategy``: nothing reaches the LLM until the user
+  says the wake phrase; afterwards the mic stays "awake" for ``wake_timeout``
+  seconds of inactivity (refreshed by any speech).
+- ``MinWordsUserTurnStartStrategy``: while the bot is speaking, a transcript
+  needs at least ``min_words`` words to interrupt it. A honk transcribes to
+  nothing; road noise to nothing; a stray word to one. When the bot is quiet,
+  a single word starts a turn.
+- ``SpeechTimeoutUserTurnStopStrategy``: the turn ends ``stop_secs`` after
+  the user pauses, once the transcript has arrived.
+
+Silero VAD sits inside the user aggregator and broadcasts speech-start/stop
+frames upstream to the segmented Whisper STT.
 """
 from __future__ import annotations
 
-from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
+from dataclasses import dataclass
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams as PipecatVADParams
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.turns.user_start import (
+    MinWordsUserTurnStartStrategy,
+    WakePhraseUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from jarvis.types import AudioSegmentResult, ConversationState, TranscriptEvent
+from jarvis.narrator import Narrator
+from jarvis.prompt import SYSTEM_PROMPT
+from jarvis.session import JarvisSession
+from jarvis.tools.handlers import build_tools
 
 
-class _NarratingProcessor(FrameProcessor):
-    """Consults ``conversation``/``reader``/``interrupt_gate`` for every
-    incoming transcript frame: while narrating, it feeds the next sentence
-    to TTS unless the interrupt gate and the conversation's own NARRATING
-    gate agree the segment should cut narration short (spec_lines 23,
-    AC-10).
+@dataclass(frozen=True)
+class TurnConfig:
+    """Everything that decides when the user has the floor."""
 
-    ``wake_word_detector`` is optional: the fake-transport test harness
-    always supplies ``words``/``has_wake_word`` directly on the frame's
-    ``metadata`` (cascade B's test-only convention), so real detection is
-    never exercised by the automated suite. A real ``TranscriptionFrame``
-    (from an actual STT service) carries neither, so this falls back to
-    counting words in ``frame.text`` and running ``wake_word_detector``
-    (or a default "jarvis" substring check) against it — the same
-    text-based simplification cascades A/B already use in place of a real
-    audio-level wake-word model (openWakeWord), documented there as a
-    deliberate v1 shortcut.
-    """
+    wake_phrases: tuple[str, ...] = ("jarvis",)
+    wake_timeout_secs: float = 20.0
+    single_activation: bool = False
+    min_words: int = 3
+    vad_confidence: float = 0.7
+    vad_start_secs: float = 0.3
+    vad_stop_secs: float = 0.8
+    vad_min_volume: float = 0.6
+    user_speech_timeout_secs: float = 0.8
+    # Fallback: end the user turn this long after it started if no stop
+    # strategy fires (e.g. no VAD frames at all in a text-driven test).
+    user_turn_stop_timeout_secs: float = 5.0
 
-    def __init__(
-        self, conversation, reader, interrupt_gate, wake_word_detector=None, **kwargs
-    ) -> None:
-        super().__init__(enable_direct_mode=True, **kwargs)
-        self._conversation = conversation
-        self._reader = reader
-        self._gate = interrupt_gate
-        self._wake_word_detector = wake_word_detector or (lambda text: "jarvis" in text.lower())
 
-    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        await super().process_frame(frame, direction)
+@dataclass
+class BuiltPipeline:
+    pipeline: Pipeline
+    context: LLMContext
+    narrator: Narrator
+    user_aggregator: object
+    assistant_aggregator: object
 
-        if direction is not FrameDirection.DOWNSTREAM or not isinstance(frame, TranscriptionFrame):
-            return
 
-        words = frame.metadata.get("words")
-        if words is None:
-            words = len(frame.text.split())
-        has_wake_word = frame.metadata.get("has_wake_word")
-        if has_wake_word is None:
-            has_wake_word = self._wake_word_detector(frame.text)
-
-        was_narrating = self._conversation.state is ConversationState.NARRATING
-        interrupted = False
-        if was_narrating:
-            segment = AudioSegmentResult(words=words, vad_active=True, text=frame.text)
-            interrupted = self._gate.should_interrupt(segment, self._conversation.state)
-
-        self._conversation.transcript(
-            TranscriptEvent(text=frame.text, words=words, has_wake_word=has_wake_word)
-        )
-
-        still_narrating = self._conversation.state is ConversationState.NARRATING
-        if was_narrating and not interrupted and still_narrating:
-            sentence = self._reader.next()
-            if sentence is not None:
-                await self.push_frame(TTSSpeakFrame(text=sentence), FrameDirection.DOWNSTREAM)
+def build_user_turn_strategies(config: TurnConfig) -> UserTurnStrategies:
+    return UserTurnStrategies(
+        start=[
+            WakePhraseUserTurnStartStrategy(
+                phrases=list(config.wake_phrases),
+                timeout=config.wake_timeout_secs,
+                single_activation=config.single_activation,
+            ),
+            MinWordsUserTurnStartStrategy(min_words=config.min_words),
+        ],
+        stop=[
+            SpeechTimeoutUserTurnStopStrategy(
+                user_speech_timeout=config.user_speech_timeout_secs
+            )
+        ],
+    )
 
 
 def build_pipeline(
     transport,
-    conversation,
-    reader,
-    interrupt_gate,
-    llm_model: str = "qwen3:8b",
-    tts_service=None,
-    wake_word_detector=None,
-    stt_service=None,
-    vad_processor=None,
-) -> Pipeline:
-    """Assemble ``transport``, ``conversation``, ``reader`` and
-    ``interrupt_gate`` into a real Pipecat ``Pipeline`` (spec_lines 22,
-    AC-9).
+    session: JarvisSession,
+    *,
+    llm=None,
+    stt=None,
+    tts=None,
+    config: TurnConfig | None = None,
+    vad: bool = True,
+) -> BuiltPipeline:
+    """Assemble the voice pipeline.
 
-    ``transport``'s own ``input()``/``output()`` frame processors are used
-    as the pipeline's boundary (``Pipeline``'s ``source``/``sink``), so
-    every frame pushed into the transport, and every frame reaching its
-    captured output, genuinely transits this ``Pipeline`` object rather than
-    bypassing it.
-
-    ``vad_processor``, ``stt_service`` and ``tts_service`` are optional and
-    default to ``None`` deliberately: a real VAD processor, STT service
-    (e.g. Whisper) and TTS service (e.g.
-    ``jarvis.tts.kokoro.build_kokoro_tts_service()``) each load model files
-    or touch real audio hardware, which the automated test suite must never
-    trigger. ``jarvis/run_desktop.py`` passes real instances here for the
-    actual desktop voice loop, in pipeline order: ``vad_processor`` (raw
-    audio in, speech-boundary frames out) -> ``stt_service`` (-> real
-    ``TranscriptionFrame``) -> narration -> ``tts_service`` (``TTSSpeakFrame``
-    in, real audio frames out). Tests (and the umbrella) leave all three
-    ``None`` and push pre-transcribed ``TranscriptionFrame``s directly,
-    getting the pre-existing text-frame-only behavior unchanged.
+    ``llm``, ``stt`` and ``tts`` are optional so tests can drive the turn
+    logic and the narrator with pre-transcribed frames and no models loaded.
+    ``vad=False`` likewise skips loading Silero.
     """
-    narrator = _NarratingProcessor(conversation, reader, interrupt_gate, wake_word_detector)
-    processors = [narrator]
-    if stt_service is not None:
-        processors.insert(0, stt_service)
-    if vad_processor is not None:
-        processors.insert(0, vad_processor)
-    if tts_service is not None:
-        processors.append(tts_service)
-    pipeline = Pipeline(processors, source=transport.input(), sink=transport.output())
-    # AC-9: the model argument must be threaded through, not silently
-    # dropped -- observable on the returned Pipeline for callers/tests.
-    pipeline.llm_model = llm_model
-    return pipeline
+    config = config or TurnConfig()
+
+    context = LLMContext(
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}],
+        tools=build_tools(session),
+    )
+
+    vad_analyzer = None
+    if vad:
+        vad_analyzer = SileroVADAnalyzer(
+            params=PipecatVADParams(
+                confidence=config.vad_confidence,
+                start_secs=config.vad_start_secs,
+                stop_secs=config.vad_stop_secs,
+                min_volume=config.vad_min_volume,
+            )
+        )
+
+    aggregators = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=vad_analyzer,
+            user_turn_strategies=build_user_turn_strategies(config),
+            user_turn_stop_timeout=config.user_turn_stop_timeout_secs,
+        ),
+    )
+
+    narrator = Narrator(name="Narrator")
+    session.narrator = narrator
+
+    processors = [transport.input()]
+    if stt is not None:
+        processors.append(stt)
+    processors.append(aggregators.user())
+    if llm is not None:
+        processors.append(llm)
+    processors.append(narrator)
+    if tts is not None:
+        processors.append(tts)
+    processors.append(transport.output())
+    processors.append(aggregators.assistant())
+
+    return BuiltPipeline(
+        pipeline=Pipeline(processors),
+        context=context,
+        narrator=narrator,
+        user_aggregator=aggregators.user(),
+        assistant_aggregator=aggregators.assistant(),
+    )

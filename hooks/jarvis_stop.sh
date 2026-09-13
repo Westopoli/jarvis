@@ -26,4 +26,4 @@ body="$(jq -n \
 curl -s -o /dev/null -X POST \
   -H "Content-Type: application/json" \
   -d "$body" \
-  "http://127.0.0.1:${JARVIS_PORT}/events"
+  "http://127.0.0.1:${JARVIS_PORT:-8000}/events"

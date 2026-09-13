@@ -96,7 +96,7 @@ async def _scripted_input(worker: PipelineWorker, lines: list[str]) -> None:
         await worker.queue_frame(
             TranscriptionFrame(text=line, user_id="script", timestamp=str(time.time()))
         )
-        await asyncio.sleep(8.0)
+        await asyncio.sleep(15.0)
 
 
 async def main(argv: list[str] | None = None) -> None:

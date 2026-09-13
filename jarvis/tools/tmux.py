@@ -80,11 +80,28 @@ def tmux_list(session: str | None = None) -> list[TmuxWindow]:
     return windows
 
 
+_WORD_NUMBERS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+
+def parse_tab_number(query: str) -> int | None:
+    """'4', 'tab 4', 'four', 'tab four', 'number four' -> 4; else None."""
+    words = re.sub(r"[^\w\s]", " ", query.lower()).split()
+    words = [w for w in words if w not in ("tab", "window", "number", "the", "to")]
+    if len(words) != 1:
+        return None
+    word = words[0]
+    if word.isdigit():
+        return int(word)
+    return _WORD_NUMBERS.get(word)
+
+
 def resolve_tab(query: str, session: str | None = None) -> int | None:
-    try:
-        return int(query)
-    except ValueError:
-        pass
+    number = parse_tab_number(query)
+    if number is not None:
+        return number
 
     best_index: int | None = None
     best_score = 0.0

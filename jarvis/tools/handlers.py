@@ -49,6 +49,31 @@ def user_confirmed(context: Any) -> bool:
     return any(re.search(rf"\b{re.escape(word)}\b", text) for word in CONFIRM_WORDS)
 
 
+_NUMBER_WORDS = {
+    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+}
+
+
+def number_word(n: int) -> str:
+    return _NUMBER_WORDS.get(n, str(n))
+
+
+def describe_tabs(windows, active_tab: int | None) -> str:
+    """Spoken listing: 'Six tabs. Zero, bash. One, agora, active. ...'"""
+    if not windows:
+        return "No tabs open."
+    parts = []
+    for w in windows:
+        label = "claude" if w.pane_command in ("claude", "node") else w.pane_command
+        item = f"{number_word(w.index)}, {w.name}, {label}"
+        if w.index == active_tab:
+            item += ", active"
+        parts.append(item)
+    count = number_word(len(windows)).capitalize()
+    return f"{count} tabs. " + ". ".join(p[0].upper() + p[1:] for p in parts) + "."
+
+
 def _resolve_target_tab(session: JarvisSession, arguments: dict) -> int | None:
     tab = arguments.get("tab")
     if tab is None or str(tab).strip().lower() in ("", "active", "current", "this", "none"):
@@ -68,17 +93,32 @@ def _window_for(session: JarvisSession, tab: int):
 def build_tools(session: JarvisSession) -> list[FunctionSchema]:
     """Return the tool schemas, with handlers bound to ``session``."""
 
+    async def _speak_instead_of_llm(params, spoken: str, result: dict) -> None:
+        """Speak a deterministic sentence and skip the LLM's follow-up turn.
+
+        Saves a whole LLM round trip (~1 s) on commands whose answer needs
+        no reasoning. Falls back to a normal tool result when there is no
+        narrator (text REPL, tests).
+        """
+        if session.narrator is None:
+            await params.result_callback(result)
+            return
+        await session.narrator.begin(spoken)
+        await params.result_callback(
+            {**result, "spoken": spoken},
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+
     async def list_tabs(params) -> None:
         windows = tmux_tools.tmux_list(session=session.tmux_session)
-        await params.result_callback(
-            {
-                "active_tab": session.active_tab,
-                "tabs": [
-                    {"index": w.index, "name": w.name, "command": w.pane_command}
-                    for w in windows
-                ],
-            }
-        )
+        result = {
+            "active_tab": session.active_tab,
+            "tabs": [
+                {"index": w.index, "name": w.name, "command": w.pane_command}
+                for w in windows
+            ],
+        }
+        await _speak_instead_of_llm(params, describe_tabs(windows, session.active_tab), result)
 
     async def switch_tab(params) -> None:
         query = str(params.arguments.get("query", ""))
@@ -88,8 +128,11 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             return
         session.active_tab = tab
         window = _window_for(session, tab)
-        await params.result_callback(
-            {"active_tab": tab, "name": window.name if window else None}
+        name = window.name if window else None
+        await _speak_instead_of_llm(
+            params,
+            f"Tab {number_word(tab)}, {name}." if name else f"Tab {number_word(tab)}.",
+            {"active_tab": tab, "name": name},
         )
 
     async def read_tab(params) -> None:

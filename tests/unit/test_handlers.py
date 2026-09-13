@@ -97,13 +97,29 @@ async def test_list_tabs_reports_active(env):
     await tools["list_tabs"](p)
     assert p.results[0]["active_tab"] == 1
     assert [t["index"] for t in p.results[0]["tabs"]] == [1, 2]
+    assert p.properties[0] is None  # no narrator: LLM answers
+
+
+async def test_list_tabs_speaks_directly_when_narrator_present(env):
+    session, tools, _, _ = env
+    session.narrator = _FakeNarrator()
+    p = _Params({}, _Context("jarvis what tabs are open"))
+    await tools["list_tabs"](p)
+    assert session.narrator.begun == ["Two tabs. One, api, claude, active. Two, web, bash."]
+    assert p.properties[0].run_llm is False
+
+
+def test_describe_tabs_empty():
+    assert handlers.describe_tabs([], None) == "No tabs open."
 
 
 async def test_switch_tab_sets_active(env):
     session, tools, _, _ = env
+    session.narrator = _FakeNarrator()
     p = _Params({"query": "web"}, _Context("switch to web"))
     await tools["switch_tab"](p)
     assert session.active_tab == 2
+    assert session.narrator.begun == ["Tab two, web."]
     p2 = _Params({"query": "nope"}, _Context("switch to nope"))
     await tools["switch_tab"](p2)
     assert "error" in p2.results[0]

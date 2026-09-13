@@ -51,9 +51,11 @@ class TurnConfig:
     min_words: int = 3
     vad_confidence: float = 0.7
     vad_start_secs: float = 0.3
-    vad_stop_secs: float = 0.8
+    vad_stop_secs: float = 0.5
     vad_min_volume: float = 0.6
-    user_speech_timeout_secs: float = 0.8
+    # Turn ends this long after VAD stop once the transcript is in. Whisper
+    # itself takes 0.3-0.9 s, so this rarely adds anything.
+    user_speech_timeout_secs: float = 0.3
     # Fallback: end the user turn this long after it started if no stop
     # strategy fires (e.g. no VAD frames at all in a text-driven test).
     user_turn_stop_timeout_secs: float = 5.0

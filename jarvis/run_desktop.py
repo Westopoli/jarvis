@@ -63,7 +63,10 @@ def build_services(cfg):
         settings=OLLamaLLMService.Settings(
             model=cfg.ollama_model,
             temperature=0.2,
-            extra={"extra_body": {"think": False}},
+            # Ollama's OpenAI-compatible endpoint ignores `think`; it honours
+            # reasoning_effort. Without this qwen3 burns 100-170 hidden
+            # reasoning tokens per call (~2.5 s on the 3060) before answering.
+            extra={"extra_body": {"reasoning_effort": "none"}},
         ),
     )
     tts = build_kokoro_tts_service()

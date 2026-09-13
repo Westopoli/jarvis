@@ -12,17 +12,13 @@ from __future__ import annotations
 
 from jarvis.session import JarvisSession
 from jarvis.tools import tmux as tmux_tools
-
-_NUMBER_WORDS = {
-    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
-    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
-}
+from jarvis.tools.handlers import number_word
 
 
 def tab_phrase(tab: int | None, name: str | None = None) -> str:
     if tab is None:
         return "an unknown tab"
-    word = _NUMBER_WORDS.get(tab, str(tab))
+    word = number_word(tab)
     return f"tab {word}, {name}" if name else f"tab {word}"
 
 

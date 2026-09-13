@@ -16,6 +16,17 @@ Kokoro's ONNX model files (~326MB) and the Whisper model from Hugging Face.
 Both are cached afterwards (``~/.cache/pipecat/kokoro-onnx/`` and the
 faster-whisper/huggingface cache) and every later run is offline.
 
+GPU note: faster-whisper's ctranslate2 backend needs cuBLAS + cuDNN (CUDA
+12) to run on the GPU. This machine has neither on the system library path
+-- only Ollama's own private copies, which ctranslate2 can't see. The
+``audio-local`` extra installs the standalone ``nvidia-cublas-cu12``/
+``nvidia-cudnn-cu12`` wheels for this; the ``_preload_cuda_libs()`` call
+below loads them with ``ctypes``/``RTLD_GLOBAL`` before any pipecat/whisper
+import, so ctranslate2's own later ``dlopen`` finds the symbols already
+resolved -- no ``LD_LIBRARY_PATH`` needed. Confirmed working: STT of a 6.9s
+clip took 0.62s on GPU (vs. multiple seconds on CPU) -- comfortably inside
+the plan's latency budget.
+
 Current scope: on start, Jarvis immediately narrates ``NARRATION_TEXT``
 below. Say "jarvis" plus a few more words to interrupt it -- the real
 ``InterruptGate``/``Conversation`` rules (cascade A) decide whether that
@@ -32,6 +43,31 @@ here blind and unverified against real hardware.
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import glob
+import importlib.util
+
+
+def _preload_cuda_libs() -> None:
+    """Load the nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels' shared
+    libraries with RTLD_GLOBAL before ctranslate2 (via faster-whisper, via
+    WhisperSTTService) ever tries to dlopen libcublas/libcudnn itself.
+    No-ops quietly if the packages aren't installed (e.g. CPU-only use) --
+    WhisperSTTService's own device="cuda" attempt will then fail with a
+    clear error instead, per its own error path."""
+    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+        spec = importlib.util.find_spec(pkg)
+        if spec is None or not spec.submodule_search_locations:
+            continue
+        for lib_dir in spec.submodule_search_locations:
+            for path in sorted(glob.glob(f"{lib_dir}/lib/*.so*")):
+                try:
+                    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
+_preload_cuda_libs()
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams as PipecatVADParams
@@ -88,8 +124,8 @@ def build_desktop_pipeline():
     )
     stt = WhisperSTTService(
         settings=WhisperSTTService.Settings(model=WHISPER_MODEL, no_speech_prob=0.4),
-        device="auto",
-        compute_type="int8",
+        device="cuda",
+        compute_type="int8_float16",
     )
     tts = build_kokoro_tts_service()
 

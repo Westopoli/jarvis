@@ -25,6 +25,13 @@ audio = [
 # before running the real desktop voice loop (slice 6/8 manual smoke checks).
 audio-local = [
     "pipecat-ai[local]>=0.0.53",
+    # faster-whisper's ctranslate2 backend needs cuBLAS + cuDNN (CUDA 12) to
+    # run WhisperSTTService on the GPU. Ollama bundles its own private copies
+    # under /usr/local/lib/ollama/cuda_v12/, not on the system loader path,
+    # so ctranslate2 can't find them without these. jarvis/run_desktop.py
+    # sets LD_LIBRARY_PATH to these wheels' own lib dirs at import time.
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12==9.*",
 ]
 server = [
     "fastapi>=0.115",

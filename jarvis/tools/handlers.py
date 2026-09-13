@@ -22,7 +22,9 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.frames.frames import FunctionCallResultProperties
 
 from jarvis.events import claude_summary
+from jarvis.fillers import pick_filler
 from jarvis.session import JarvisSession, StagedPrompt
+from jarvis.speakable import to_speakable
 from jarvis.tools import tmux as tmux_tools
 
 CONFIRM_WORDS = ("send", "yes", "go ahead", "confirm", "do it", "allow", "approve")
@@ -109,6 +111,11 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             properties=FunctionCallResultProperties(run_llm=False),
         )
 
+    async def _filler(tool_name: str) -> None:
+        """Say something short while a tool + LLM follow-up (~2-3 s) runs."""
+        if session.narrator is not None:
+            await session.narrator.say(pick_filler(tool_name))
+
     async def list_tabs(params) -> None:
         windows = tmux_tools.tmux_list(session=session.tmux_session)
         result = {
@@ -145,8 +152,8 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             await params.result_callback({"tab": tab, "text": text[:_MAX_SUMMARY_CHARS]})
             return
         window = _window_for(session, tab)
-        lead = f"Tab {tab}, {window.name}." if window else f"Tab {tab}."
-        await session.narrator.begin(f"{lead} {text}")
+        lead = f"Tab {number_word(tab)}, {window.name}." if window else f"Tab {number_word(tab)}."
+        await session.narrator.begin(f"{lead} {to_speakable(text)}")
         await params.result_callback(
             {"status": "reading aloud", "tab": tab},
             properties=FunctionCallResultProperties(run_llm=False),
@@ -157,12 +164,16 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
         if tab is None:
             await params.result_callback({"error": "no active tab; ask which tab"})
             return
+        await _filler("claude_summary")
         text = claude_summary(tab, session.event_store, session=session.tmux_session)
         await params.result_callback(
             {
                 "tab": tab,
-                "latest_output": text[-_MAX_SUMMARY_CHARS:],
-                "instruction": "Summarise this for a driver in at most three short sentences.",
+                "latest_output": to_speakable(text)[-_MAX_SUMMARY_CHARS:],
+                "instruction": (
+                    "Summarise this for a driver in at most three short sentences. "
+                    "Never quote commands, paths, or code; say what they do."
+                ),
             }
         )
 
@@ -176,6 +187,7 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             await params.result_callback({"error": "empty prompt"})
             return
         session.staged = StagedPrompt(tab=tab, text=text)
+        await _filler("stage_prompt")
         await params.result_callback(
             {
                 "staged": {"tab": tab, "text": text},

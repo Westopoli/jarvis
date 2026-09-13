@@ -35,6 +35,7 @@ from pipecat.turns.user_start import (
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from jarvis.audio.mute import BotSpeakingUserMuteStrategy
 from jarvis.narrator import Narrator
 from jarvis.prompt import SYSTEM_PROMPT
 from jarvis.session import JarvisSession
@@ -51,7 +52,7 @@ class TurnConfig:
     min_words: int = 3
     vad_confidence: float = 0.7
     vad_start_secs: float = 0.3
-    vad_stop_secs: float = 0.5
+    vad_stop_secs: float = 0.8
     vad_min_volume: float = 0.6
     # Turn ends this long after VAD stop once the transcript is in. Whisper
     # itself takes 0.3-0.9 s, so this rarely adds anything.
@@ -59,6 +60,9 @@ class TurnConfig:
     # Fallback: end the user turn this long after it started if no stop
     # strategy fires (e.g. no VAD frames at all in a text-driven test).
     user_turn_stop_timeout_secs: float = 5.0
+    # Mute the mic while Jarvis speaks. Needed on speakers (no echo
+    # cancellation); disables barge-in. Off for headphones / phone calls.
+    half_duplex: bool = False
 
 
 @dataclass
@@ -128,6 +132,7 @@ def build_pipeline(
             vad_analyzer=vad_analyzer,
             user_turn_strategies=build_user_turn_strategies(config),
             user_turn_stop_timeout=config.user_turn_stop_timeout_secs,
+            user_mute_strategies=[BotSpeakingUserMuteStrategy()] if config.half_duplex else [],
         ),
     )
 

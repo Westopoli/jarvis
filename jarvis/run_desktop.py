@@ -12,6 +12,11 @@ Options:
                                        without a microphone
   --no-server                          don't host the hook ingest server
                                        in-process (no proactive announcements)
+  --full-duplex                        keep listening while Jarvis speaks.
+                                       Headphones only: on speakers he hears
+                                       himself and cuts himself off. Default
+                                       is half duplex (mic muted while he
+                                       talks), which means no barge-in.
 
 The hook ingest server (``/events``) runs in-process on ``JARVIS_PORT`` so
 Claude Code's Stop/Notification hooks can wake Jarvis: "Tab two has
@@ -108,6 +113,12 @@ async def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-server", action="store_true")
     parser.add_argument("--wake-timeout", type=float, default=20.0)
     parser.add_argument("--min-words", type=int, default=3)
+    parser.add_argument(
+        "--full-duplex",
+        action="store_true",
+        help="keep the mic open while Jarvis speaks (headphones only; on "
+        "speakers he hears himself and interrupts himself)",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -123,7 +134,11 @@ async def main(argv: list[str] | None = None) -> None:
         llm=llm,
         stt=stt,
         tts=tts,
-        config=TurnConfig(wake_timeout_secs=args.wake_timeout, min_words=args.min_words),
+        config=TurnConfig(
+            wake_timeout_secs=args.wake_timeout,
+            min_words=args.min_words,
+            half_duplex=not args.full_duplex,
+        ),
     )
 
     worker = PipelineWorker(

@@ -33,6 +33,14 @@ FILLERS: dict[str, list[str]] = {
         "Picking up where we left off.",
         "Resuming that for you now.",
     ],
+    "stage_prompt": [
+        "Got it. Let me read that back.",
+        "Right. Here's what I have.",
+    ],
+    "summarize_tab": [
+        "Let me see what Claude's been up to.",
+        "One moment, having a look.",
+    ],
 }
 
 _FALLBACK_PHRASE = "One moment, please."

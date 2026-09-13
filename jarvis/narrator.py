@@ -1,15 +1,19 @@
 """Sentence-by-sentence narration with an interrupt-safe cursor.
 
 ``Narrator`` is a Pipecat ``FrameProcessor`` placed between the LLM and the
-TTS service. Tool handlers call ``begin(text)`` to start reading a block of
-text aloud; the narrator then feeds the TTS one sentence at a time, advancing
-only after the output transport reports the bot stopped speaking. When the
-user barges in, Pipecat broadcasts an ``InterruptionFrame`` — the narrator
-pauses and keeps its cursor on the sentence that was cut off, so ``resume()``
-picks up exactly there.
+TTS service. Tool handlers call ``begin(text)`` to read a block of text
+aloud. Sentences are handed to the TTS one at a time with a lookahead of
+one, so the next sentence is synthesised while the current one plays (no
+gaps) but never more than one is queued (so an interruption loses at most
+one sentence of position).
 
-Why one sentence at a time rather than one big ``TTSSpeakFrame``: the cursor
-is what makes "resume where you left off" possible after an interruption.
+How the cursor stays accurate: the output transport processes the TTS
+service's ``TTSStoppedFrame`` in order with the audio, so it reports
+``BotStoppedSpeakingFrame`` once per sentence, exactly when that sentence's
+audio has finished playing. Each such frame advances ``played``. On an
+``InterruptionFrame`` the queued sentence is discarded by Pipecat and the
+narrator pauses with the cursor on the sentence that was cut off, so
+``resume()`` re-speaks it.
 """
 from __future__ import annotations
 
@@ -26,6 +30,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.reader import Reader
 
+LOOKAHEAD = 1
+
 
 class NarrationState(str, enum.Enum):
     IDLE = "IDLE"
@@ -38,13 +44,14 @@ class Narrator(FrameProcessor):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._reader: Reader | None = None
+        self._sentences: list[str] = []
+        self._played = 0  # sentences whose audio finished
+        self._pushed = 0  # sentences handed to the TTS
         self._state = NarrationState.IDLE
-        # True between pushing a sentence and hearing BotStartedSpeaking for
-        # it. Guards against a BotStoppedSpeaking that belongs to earlier
-        # audio (an LLM reply or filler still draining) advancing the cursor.
-        self._awaiting_start = False
-        self._speaking = False
+        # Set once we hear BotStartedSpeaking after our own push, so a
+        # BotStoppedSpeaking that belongs to earlier audio (an LLM reply or a
+        # filler still draining) cannot advance the cursor.
+        self._armed = False
 
     # -- public API (called from tool handlers) --------------------------
 
@@ -54,43 +61,65 @@ class Narrator(FrameProcessor):
 
     @property
     def has_narration(self) -> bool:
-        return self._reader is not None
+        return bool(self._sentences)
+
+    @property
+    def position(self) -> tuple[int, int]:
+        """(sentences finished, total)."""
+        return self._played, len(self._sentences)
 
     async def begin(self, text: str) -> None:
         """Start narrating ``text`` from its first sentence."""
-        self._reader = Reader(text)
-        await self._play(self._reader.next())
+        self._sentences = Reader(text)._sentences
+        self._played = 0
+        self._pushed = 0
+        self._armed = False
+        if not self._sentences:
+            self._state = NarrationState.IDLE
+            return
+        self._state = NarrationState.PLAYING
+        await self._fill()
 
     async def resume(self) -> bool:
-        """Re-speak the sentence that was interrupted and continue from there.
-
-        Returns False when there is nothing to resume.
-        """
-        if self._reader is None or self._state is NarrationState.PLAYING:
+        """Re-speak the sentence that was interrupted and continue from there."""
+        if self._state is not NarrationState.PAUSED:
             return False
-        sentence = self._reader.resume()
-        if sentence is None:
-            return False
-        await self._play(sentence)
+        self._state = NarrationState.PLAYING
+        self._pushed = self._played
+        self._armed = False
+        await self._fill()
         return True
 
     async def skip(self) -> bool:
-        """Skip the current sentence and continue with the next one."""
-        if self._reader is None:
+        """Skip a sentence: the interrupted one when paused, the next unqueued
+        one when playing (the queued lookahead cannot be recalled)."""
+        if not self._sentences:
             return False
         if self._state is NarrationState.PAUSED:
-            # The cursor already sits past the interrupted sentence.
-            await self._play(self._reader.next())
-            return True
-        # Playing: the current sentence keeps playing; drop the one after it.
-        self._reader.skip()
+            self._played += 1
+            if self._played >= len(self._sentences):
+                await self.stop()
+                return True
+            return await self.resume()
+        if self._pushed < len(self._sentences):
+            del self._sentences[self._pushed]
         return True
+
+    async def say(self, text: str) -> None:
+        """Speak a one-off sentence (a filler) without touching the cursor.
+
+        Not added to the LLM context: fillers are noise there.
+        """
+        await self.push_frame(
+            TTSSpeakFrame(text=text, append_to_context=False), FrameDirection.DOWNSTREAM
+        )
 
     async def stop(self) -> None:
         """Abandon the current narration."""
-        self._reader = None
+        self._sentences = []
+        self._played = self._pushed = 0
         self._state = NarrationState.IDLE
-        self._awaiting_start = False
+        self._armed = False
 
     # -- frame handling ---------------------------------------------------
 
@@ -99,32 +128,29 @@ class Narrator(FrameProcessor):
 
         if isinstance(frame, InterruptionFrame):
             if self._state is NarrationState.PLAYING:
+                # Pipecat drops the queued lookahead; cursor stays on the
+                # sentence that was cut off (index == self._played).
                 self._state = NarrationState.PAUSED
-            self._awaiting_start = False
-            self._speaking = False
+                self._pushed = self._played
+            self._armed = False
         elif isinstance(frame, BotStartedSpeakingFrame):
-            self._speaking = True
-            if self._awaiting_start:
-                self._awaiting_start = False
+            if self._state is NarrationState.PLAYING and self._pushed > self._played:
+                self._armed = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
-            was_ours = self._speaking and not self._awaiting_start
-            self._speaking = False
-            if was_ours and self._state is NarrationState.PLAYING:
-                await self._advance()
+            if self._state is NarrationState.PLAYING and self._armed:
+                self._played += 1
+                if self._played >= len(self._sentences):
+                    await self.stop()
+                else:
+                    await self._fill()
 
         await self.push_frame(frame, direction)
 
     # -- internals --------------------------------------------------------
 
-    async def _advance(self) -> None:
-        assert self._reader is not None
-        await self._play(self._reader.next())
-
-    async def _play(self, sentence: str | None) -> None:
-        if sentence is None:
-            self._state = NarrationState.IDLE
-            self._reader = None
-            return
-        self._state = NarrationState.PLAYING
-        self._awaiting_start = True
-        await self.push_frame(TTSSpeakFrame(text=sentence), FrameDirection.DOWNSTREAM)
+    async def _fill(self) -> None:
+        limit = min(len(self._sentences), self._played + 1 + LOOKAHEAD)
+        while self._pushed < limit:
+            sentence = self._sentences[self._pushed]
+            self._pushed += 1
+            await self.push_frame(TTSSpeakFrame(text=sentence), FrameDirection.DOWNSTREAM)

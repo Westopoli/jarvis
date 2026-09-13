@@ -103,12 +103,21 @@ def resolve_tab(query: str, session: str | None = None) -> int | None:
     if number is not None:
         return number
 
+    # Rank: similarity first; on ties prefer a window-name match over a
+    # directory-name match, then a window running Claude. Several windows
+    # often share a directory (e.g. a shell and a Claude session in the same
+    # project), and "agora" should mean the Claude one.
     best_index: int | None = None
+    best_key: tuple[float, bool, bool] | None = None
     best_score = 0.0
+    query_l = query.lower()
     for window in tmux_list(session=session):
-        for candidate in (window.name, Path(window.pane_path).name):
-            score = SequenceMatcher(None, query.lower(), candidate.lower()).ratio()
-            if score > best_score:
+        is_claude = window.pane_command in _ALLOWED_SEND_COMMANDS
+        for candidate, is_name in ((window.name, True), (Path(window.pane_path).name, False)):
+            score = SequenceMatcher(None, query_l, candidate.lower()).ratio()
+            key = (score, is_name, is_claude)
+            if best_key is None or key > best_key:
+                best_key = key
                 best_score = score
                 best_index = window.index
 

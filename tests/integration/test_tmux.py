@@ -374,3 +374,22 @@ def test_tmux_send_force_bypasses_pane_command_check_and_reaches_the_pane(tmux_f
         )
         >= 2
     )
+
+
+@pytest.mark.slow
+def test_resolve_tab_prefers_claude_window_among_same_named():
+    """Two windows named 'agora' in the same directory: the one running
+    Claude wins, and a shell whose *directory* is agora never outranks a
+    window *named* agora."""
+    from unittest.mock import patch
+    from jarvis.tools.tmux import resolve_tab
+    from jarvis.types import TmuxWindow
+
+    windows = [
+        TmuxWindow(index=0, name="bash", pane_path="/home/u/Projects/agora", pane_command="bash"),
+        TmuxWindow(index=1, name="agora", pane_path="/home/u/Projects/agora", pane_command="bash"),
+        TmuxWindow(index=2, name="agora", pane_path="/home/u/Projects/agora", pane_command="claude"),
+    ]
+    with patch("jarvis.tools.tmux.tmux_list", return_value=windows):
+        assert resolve_tab("agora", session="x") == 2
+        assert resolve_tab("the agora chat", session="x") == 2

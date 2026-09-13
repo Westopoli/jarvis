@@ -39,7 +39,11 @@ class _Params:
 class _FakeNarrator:
     def __init__(self) -> None:
         self.begun: list[str] = []
+        self.said: list[str] = []
         self.resumed = 0
+
+    async def say(self, text: str) -> None:
+        self.said.append(text)
 
     async def begin(self, text: str) -> None:
         self.begun.append(text)
@@ -171,7 +175,7 @@ async def test_read_tab_hands_off_to_narrator_and_silences_llm(env):
     session.narrator = _FakeNarrator()
     p = _Params({}, _Context("read it"))
     await tools["read_tab"](p)
-    assert session.narrator.begun == ["Tab 1, api. output of 1"]
+    assert session.narrator.begun == ["Tab one, api. output of 1"]
     assert p.properties[0].run_llm is False
 
 
@@ -188,6 +192,16 @@ async def test_summarize_tab_returns_output_for_llm(env):
     await tools["summarize_tab"](p)
     assert p.results[0]["latest_output"] == "output of 1"
     assert p.properties[0] is None  # LLM runs
+
+
+async def test_summarize_and_stage_speak_a_filler_first(env):
+    session, tools, _, _ = env
+    session.narrator = _FakeNarrator()
+    await tools["summarize_tab"](_Params({}, _Context("update me")))
+    await tools["stage_prompt"](_Params({"text": "hi"}, _Context("tell it hi")))
+    assert len(session.narrator.said) == 2
+    assert all(s for s in session.narrator.said)
+    assert session.narrator.begun == []
 
 
 async def test_no_active_tab_errors(env):

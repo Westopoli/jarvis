@@ -118,4 +118,4 @@ async def test_narrator_output_reaches_transport():
         await run.built.narrator.begin("Alpha one. Beta two.")
         await asyncio.sleep(0.2)
         spoken = [f.text for f in run.transport.frames_of(TTSSpeakFrame)]
-        assert spoken == ["Alpha one."]
+        assert spoken == ["Alpha one.", "Beta two."]  # lookahead of one

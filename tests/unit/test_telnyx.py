@@ -254,11 +254,42 @@ def test_an_allowed_caller_does_reach_the_serializer_builder(
     # would pass against a route that never builds a serializer at all.
     monkeypatch.setenv("TELNYX_ALLOWED_CALLER", ALLOWED)
     monkeypatch.setenv("TELNYX_API_KEY", "fake-telnyx-key")
+    ran = []
 
-    try:
-        with client.websocket_connect("/ws/telnyx") as ws:
-            ws.send_json(_start_event(ALLOWED))
-    except Exception:  # whatever the route does with the spy's return value
-        pass
+    async def fake_run_call(websocket, serializer, store):
+        ran.append(serializer)
+
+    monkeypatch.setattr(server_mod, "run_call", fake_run_call)
+    client = TestClient(server_mod.create_app(server_mod.store))
+
+    with client.websocket_connect("/ws/telnyx") as ws:
+        ws.send_json(_start_event(ALLOWED))
 
     assert [call[0] for call in serializer_spy.calls] == [STREAM_ID]
+    assert len(ran) == 1
+
+
+def test_connected_event_before_start_is_tolerated(serializer_spy, monkeypatch):
+    monkeypatch.setenv("TELNYX_ALLOWED_CALLER", ALLOWED)
+    ran = []
+
+    async def fake_run_call(websocket, serializer, store):
+        ran.append(serializer)
+
+    monkeypatch.setattr(server_mod, "run_call", fake_run_call)
+    client = TestClient(server_mod.create_app(server_mod.store))
+    with client.websocket_connect("/ws/telnyx") as ws:
+        ws.send_json({"event": "connected", "version": "1.0.0"})
+        ws.send_json(_start_event(ALLOWED))
+    assert len(ran) == 1
+
+
+def test_texml_points_telnyx_at_our_websocket(monkeypatch):
+    client = TestClient(server_mod.app)
+    monkeypatch.delenv("JARVIS_PUBLIC_HOSTNAME", raising=False)
+    assert client.post("/texml").status_code == 503
+    monkeypatch.setenv("JARVIS_PUBLIC_HOSTNAME", "box.example.ts.net")
+    r = client.post("/texml")
+    assert r.status_code == 200
+    assert 'url="wss://box.example.ts.net/ws/telnyx"' in r.text
+    assert "<Connect>" in r.text and "bidirectionalMode" in r.text

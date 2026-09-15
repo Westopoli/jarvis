@@ -1,11 +1,14 @@
 [Unit]
 Description=Jarvis voice assistant server
-After=network-online.target
+After=network-online.target ollama.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/jarvis
+WorkingDirectory=%h/Projects/jarvis
+# Secrets and identifiers live outside the repo: TELNYX_API_KEY,
+# TELNYX_ALLOWED_CALLER, JARVIS_PUBLIC_HOSTNAME, ...
+EnvironmentFile=%h/.config/jarvis/env
 Environment=OLLAMA_KEEP_ALIVE=-1
 ExecStart=/usr/bin/env uv run jarvis
 Restart=on-failure

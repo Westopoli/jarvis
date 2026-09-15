@@ -14,7 +14,7 @@ from pipecat.serializers.telnyx import TelnyxFrameSerializer
 
 
 def build_telnyx_serializer(
-    stream_id: str, call_control_id: str | None = None
+    stream_id: str, call_control_id: str | None = None, outbound_encoding: str = "PCMU"
 ) -> TelnyxFrameSerializer:
     """Construct a real ``TelnyxFrameSerializer`` for one call's media stream.
 
@@ -24,7 +24,7 @@ def build_telnyx_serializer(
     api_key = os.environ.get("TELNYX_API_KEY")
     return TelnyxFrameSerializer(
         stream_id,
-        outbound_encoding="PCMU",
+        outbound_encoding=outbound_encoding,
         inbound_encoding="PCMU",
         call_control_id=call_control_id,
         api_key=api_key,

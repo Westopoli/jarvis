@@ -83,6 +83,18 @@ def test_build_pipeline_wires_session_narrator():
     assert built.context.tools is not None
 
 
+def test_build_pipeline_defaults_the_system_prompt_to_ollama_wording():
+    built = build_pipeline(CaptureTransport(), JarvisSession(), vad=False)
+
+    assert "Ollama" in built.context.messages[0]["content"]
+
+
+def test_build_pipeline_threads_llm_provider_into_the_system_prompt():
+    built = build_pipeline(CaptureTransport(), JarvisSession(), vad=False, llm_provider="groq")
+
+    assert "Groq" in built.context.messages[0]["content"]
+
+
 async def test_wake_phrase_gates_the_llm():
     async with _Run() as run:
         await run.say("what tabs are open")

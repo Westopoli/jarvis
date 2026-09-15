@@ -37,7 +37,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from jarvis.audio.mute import BotSpeakingUserMuteStrategy
 from jarvis.narrator import Narrator
-from jarvis.prompt import SYSTEM_PROMPT
+from jarvis.prompt import build_system_prompt
 from jarvis.session import JarvisSession
 from jarvis.tools.handlers import build_tools
 
@@ -101,17 +101,21 @@ def build_pipeline(
     tts=None,
     config: TurnConfig | None = None,
     vad: bool = True,
+    llm_provider: str = "ollama",
 ) -> BuiltPipeline:
     """Assemble the voice pipeline.
 
     ``llm``, ``stt`` and ``tts`` are optional so tests can drive the turn
     logic and the narrator with pre-transcribed frames and no models loaded.
-    ``vad=False`` likewise skips loading Silero.
+    ``vad=False`` likewise skips loading Silero. ``llm_provider`` only
+    controls the system prompt's "how you work" wording -- it does not
+    itself select which LLM service is used; the caller passes that
+    separately as ``llm``.
     """
     config = config or TurnConfig()
 
     context = LLMContext(
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}],
+        messages=[{"role": "system", "content": build_system_prompt(llm_provider)}],
         tools=build_tools(session),
     )
 

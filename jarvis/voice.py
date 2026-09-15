@@ -134,7 +134,10 @@ async def run_session(
         except Exception as exc:
             logger.warning(f"could not rename tmux windows: {exc}")
     stt, llm, tts = await get_warm_services(cfg)
-    built = build_pipeline(transport, session, llm=llm, stt=stt, tts=tts, config=turn_config)
+    built = build_pipeline(
+        transport, session, llm=llm, stt=stt, tts=tts, config=turn_config,
+        llm_provider=cfg.llm_provider,
+    )
     worker = PipelineWorker(
         built.pipeline,
         params=PipelineParams(

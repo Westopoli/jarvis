@@ -67,7 +67,7 @@ async def announce_loop(worker: PipelineWorker, announcer: Announcer) -> None:
 
 
 async def scripted_input(worker: PipelineWorker, lines: list[str], gap_secs: float = 15.0) -> None:
-    await asyncio.sleep(3.0)
+    await asyncio.sleep(5.0)  # after the greeting: half-duplex drops transcripts while it plays
     for line in lines:
         logger.info(f"scripted transcript: {line!r}")
         await worker.queue_frame(

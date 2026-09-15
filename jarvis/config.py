@@ -23,6 +23,7 @@ class Config:
     jarvis_public_hostname: str
     jarvis_host: str
     jarvis_port: int
+    jarvis_rename_windows: bool = True
 
     @property
     def telnyx_configured(self) -> bool:
@@ -41,4 +42,5 @@ def load_config() -> Config:
         jarvis_public_hostname=os.environ.get("JARVIS_PUBLIC_HOSTNAME", ""),
         jarvis_host=os.environ.get("JARVIS_HOST", "127.0.0.1"),
         jarvis_port=int(os.environ.get("JARVIS_PORT", "8000")),
+        jarvis_rename_windows=os.environ.get("JARVIS_RENAME_WINDOWS", "1") not in ("0", "false", "no"),
     )

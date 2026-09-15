@@ -188,3 +188,35 @@ def tmux_send_key(tab: int, key: str, session: str | None = None) -> None:
         raise ValueError(f"tmux_send_key refused: {key!r} not in {_ALLOWED_KEYS}")
     session = _resolve_session(session)
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{tab}", key], check=True)
+
+
+def unique_window_names(session: str | None = None, *, dry_run: bool = False) -> list[tuple[int, str, str]]:
+    """Give every window a distinct, speakable name: ``<dir>`` for a shell,
+    ``<dir>-claude`` for a Claude session, with ``-2``, ``-3`` on collisions.
+
+    Windows already unique and matching this scheme are left alone. Returns
+    the renames as ``(index, old, new)``. Turns off tmux's automatic rename
+    for renamed windows so the shell does not undo it.
+    """
+    session = _resolve_session(session)
+    windows = tmux_list(session=session)
+    taken: set[str] = set()
+    renames: list[tuple[int, str, str]] = []
+    for window in windows:
+        base = Path(window.pane_path).name or window.name or "shell"
+        base = re.sub(r"[^A-Za-z0-9]+", "-", base).strip("-").lower() or "shell"
+        wanted = f"{base}-claude" if window.pane_command in _ALLOWED_SEND_COMMANDS else base
+        name = wanted
+        n = 2
+        while name in taken:
+            name = f"{wanted}-{n}"
+            n += 1
+        taken.add(name)
+        if name != window.name:
+            renames.append((window.index, window.name, name))
+    if not dry_run:
+        for index, _old, new in renames:
+            target = f"{session}:{index}"
+            subprocess.run(["tmux", "rename-window", "-t", target, new], check=True)
+            subprocess.run(["tmux", "set-option", "-t", target, "-w", "automatic-rename", "off"], check=True)
+    return renames

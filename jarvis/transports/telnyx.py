@@ -34,12 +34,13 @@ def build_telnyx_serializer(
 def is_allowed_caller(from_number: str) -> bool:
     """Return True only if ``from_number`` exactly matches a configured entry.
 
-    Reads ``TELNYX_ALLOWED_CALLER`` (comma-separated E.164 numbers) from the
-    environment at call time, not import time, so tests can monkeypatch it.
+    Reads ``JARVIS_ALLOWED_CALLER`` (falling back to ``TELNYX_ALLOWED_CALLER``;
+    comma-separated E.164 numbers) from the environment at call time, not
+    import time, so tests can monkeypatch it.
     Fails closed: an unset/empty/whitespace-only env var (or a blank entry
     within it) never matches anything, including a blank caller number.
     """
-    raw = os.environ.get("TELNYX_ALLOWED_CALLER", "")
+    raw = os.environ.get("JARVIS_ALLOWED_CALLER") or os.environ.get("TELNYX_ALLOWED_CALLER", "")
     if not raw.strip():
         return False
 

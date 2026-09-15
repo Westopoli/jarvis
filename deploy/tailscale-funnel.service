@@ -8,6 +8,8 @@ Type=oneshot
 RemainAfterExit=yes
 # Only the Telnyx routes and the health check go public. /events (Claude
 # hook ingest) stays loopback-only.
+ExecStart=/usr/bin/tailscale funnel --bg --set-path=/twiml http://127.0.0.1:8000/twiml
+ExecStart=/usr/bin/tailscale funnel --bg --set-path=/ws/twilio http://127.0.0.1:8000/ws/twilio
 ExecStart=/usr/bin/tailscale funnel --bg --set-path=/ws/telnyx http://127.0.0.1:8000/ws/telnyx
 ExecStart=/usr/bin/tailscale funnel --bg --set-path=/texml http://127.0.0.1:8000/texml
 ExecStart=/usr/bin/tailscale funnel --bg --set-path=/health http://127.0.0.1:8000/health

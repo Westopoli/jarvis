@@ -27,6 +27,7 @@ from jarvis.announcer import Announcer  # noqa: E402
 from jarvis.config import Config  # noqa: E402
 from jarvis.pipeline import TurnConfig, build_pipeline  # noqa: E402
 from jarvis.session import JarvisSession  # noqa: E402
+from jarvis.tools import tmux as tmux_tools  # noqa: E402
 from jarvis.tts.kokoro import build_kokoro_tts_service  # noqa: E402
 
 WHISPER_MODEL = "Systran/faster-distil-whisper-large-v3"
@@ -90,6 +91,12 @@ async def run_session(
     handle_sigint: bool = True,
 ) -> None:
     """Run one voice session on ``transport`` until it ends."""
+    if cfg.jarvis_rename_windows:
+        try:
+            for index, old, new in tmux_tools.unique_window_names(session.tmux_session):
+                logger.info(f"tmux window {index}: {old!r} -> {new!r}")
+        except Exception as exc:
+            logger.warning(f"could not rename tmux windows: {exc}")
     stt, llm, tts = build_services(cfg)
     built = build_pipeline(transport, session, llm=llm, stt=stt, tts=tts, config=turn_config)
     worker = PipelineWorker(

@@ -1,11 +1,14 @@
 """HTTP daemon: Claude Code hook ingest, health check, Telnyx phone calls.
 
 Bound to loopback only. The hook scripts POST to ``/events`` from the same
-machine. Only ``/texml``, ``/ws/telnyx`` and ``/health`` are meant to be
-published through Tailscale Funnel (path rules, see deploy/); ``/events``
-must never be routed publicly.
+machine. Only the telephony routes (``/twiml``, ``/ws/twilio``, ``/texml``,
+``/ws/telnyx``) and ``/health`` are meant to be published through Tailscale
+Funnel (path rules, see deploy/); ``/events`` must never be routed publicly.
 
-Phone call flow (Telnyx):
+Twilio is the provider in use (see ``jarvis/transports/twilio.py``); the
+Telnyx routes are kept as a second option.
+
+Phone call flow (Telnyx variant):
 
 1. You dial the Telnyx number. Telnyx POSTs to ``/texml``; we answer with
    TeXML that tells it to open a bidirectional media stream to
@@ -19,6 +22,7 @@ Phone call flow (Telnyx):
 from __future__ import annotations
 
 import os
+from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response
@@ -28,6 +32,7 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.config import load_config
 from jarvis.events import EventStore
 from jarvis.transports.telnyx import build_telnyx_serializer, is_allowed_caller
+from jarvis.transports.twilio import build_twilio_serializer, signature_valid, twiml_for
 
 HOST = "127.0.0.1"
 MAX_HANDSHAKE_MESSAGES = 3
@@ -101,6 +106,53 @@ def create_app(store: EventStore, *, call_runner=None) -> FastAPI:
         if not hostname:
             return Response(status_code=503, content=b"JARVIS_PUBLIC_HOSTNAME not set")
         return Response(content=texml_for(hostname), media_type="application/xml")
+
+    @app.post("/twiml")
+    async def post_twiml(request: Request) -> Response:
+        hostname = os.environ.get("JARVIS_PUBLIC_HOSTNAME", "")
+        if not hostname:
+            return Response(status_code=503, content=b"JARVIS_PUBLIC_HOSTNAME not set")
+        body = (await request.body()).decode()
+        params = dict(parse_qsl(body, keep_blank_values=True))
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+        if auth_token:
+            url = f"https://{hostname}/twiml"
+            if not signature_valid(auth_token, url, params, request.headers.get("X-Twilio-Signature")):
+                logger.warning("twiml webhook: bad Twilio signature")
+                return Response(status_code=403, content=b"bad signature")
+        from_number = params.get("From", "")
+        if not is_allowed_caller(from_number):
+            logger.warning(f"twiml webhook: rejected caller ...{from_number[-4:]}")
+            return Response(
+                content='<?xml version="1.0" encoding="UTF-8"?><Response><Reject /></Response>',
+                media_type="application/xml",
+            )
+        return Response(content=twiml_for(hostname, from_number), media_type="application/xml")
+
+    @app.websocket("/ws/twilio")
+    async def ws_twilio(websocket: WebSocket) -> None:
+        await websocket.accept()
+        start = None
+        for _ in range(MAX_HANDSHAKE_MESSAGES):
+            try:
+                payload = await websocket.receive_json()
+            except (WebSocketDisconnect, ValueError):
+                return
+            if payload.get("event") == "start":
+                start = payload
+                break
+        if start is None:
+            await websocket.close()
+            return
+        info = start.get("start") or {}
+        from_number = (info.get("customParameters") or {}).get("from_number", "")
+        if not is_allowed_caller(from_number):
+            logger.warning(f"rejected twilio stream from ...{from_number[-4:] if from_number else '?'}")
+            await websocket.close()
+            return
+        serializer = build_twilio_serializer(info.get("streamSid"), call_sid=info.get("callSid"))
+        logger.info(f"twilio call accepted from ...{from_number[-4:]}, stream {info.get('streamSid')}")
+        await runner(websocket, serializer, store)
 
     @app.websocket("/ws/telnyx")
     async def ws_telnyx(websocket: WebSocket) -> None:

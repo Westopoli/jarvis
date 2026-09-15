@@ -41,6 +41,10 @@ EXPECTED_DEFAULTS = {
     "telnyx_allowed_caller": "",
     "jarvis_public_hostname": "",
     "jarvis_host": "127.0.0.1",
+    # Groq: cloud LLM backend, opt-in via JARVIS_LLM_PROVIDER.
+    "llm_provider": "ollama",
+    "groq_api_key": "",
+    "groq_model": "openai/gpt-oss-120b",
 }
 
 ENV_KEYS = [
@@ -54,6 +58,9 @@ ENV_KEYS = [
     "JARVIS_PUBLIC_HOSTNAME",
     "JARVIS_HOST",
     "JARVIS_PORT",
+    "JARVIS_LLM_PROVIDER",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
 ]
 
 OVERRIDES = {
@@ -67,6 +74,9 @@ OVERRIDES = {
     "JARVIS_PUBLIC_HOSTNAME": "jarvis.example.com",
     "JARVIS_HOST": "0.0.0.0",
     "JARVIS_PORT": "9001",
+    "JARVIS_LLM_PROVIDER": "groq",
+    "GROQ_API_KEY": "gsk_test0123456789",
+    "GROQ_MODEL": "openai/gpt-oss-20b",
 }
 
 
@@ -129,6 +139,9 @@ def test_every_documented_env_var_overrides_its_default(clean_env):
         "telnyx_allowed_caller": "+15551234567",
         "jarvis_public_hostname": "jarvis.example.com",
         "jarvis_host": "0.0.0.0",
+        "llm_provider": "groq",
+        "groq_api_key": "gsk_test0123456789",
+        "groq_model": "openai/gpt-oss-20b",
     }
     assert (str(config.ollama_keep_alive), int(config.jarvis_port)) == ("30m", 9001)
 

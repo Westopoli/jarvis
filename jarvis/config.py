@@ -45,6 +45,9 @@ class Config:
     jarvis_host: str
     jarvis_port: int
     jarvis_rename_windows: bool = True
+    llm_provider: str = "ollama"
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-120b"
 
     @property
     def telnyx_configured(self) -> bool:
@@ -66,4 +69,7 @@ def load_config(*, dotenv: bool = True) -> Config:
         jarvis_host=os.environ.get("JARVIS_HOST", "127.0.0.1"),
         jarvis_port=int(os.environ.get("JARVIS_PORT", "8000")),
         jarvis_rename_windows=os.environ.get("JARVIS_RENAME_WINDOWS", "1") not in ("0", "false", "no"),
+        llm_provider=os.environ.get("JARVIS_LLM_PROVIDER", "ollama"),
+        groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+        groq_model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
     )

@@ -20,7 +20,7 @@ def load_dotenv(path: Path = DOTENV) -> None:
     Real environment variables win; the file only fills in what is unset.
     The file is gitignored: it holds Twilio credentials and your number.
     """
-    if not path.is_file():
+    if os.environ.get("JARVIS_DOTENV", "1") in ("0", "false", "no") or not path.is_file():
         return
     for raw in path.read_text().splitlines():
         line = raw.strip()

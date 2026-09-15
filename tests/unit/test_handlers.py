@@ -124,10 +124,21 @@ async def test_switch_tab_sets_active(env):
     await tools["switch_tab"](p)
     assert session.active_tab == 2
     assert session.narrator.begun == ["Tab two, web."]
+    monkeypatch_find = handlers.find_tabs
     p2 = _Params({"query": "nope"}, _Context("switch to nope"))
     await tools["switch_tab"](p2)
     assert "error" in p2.results[0]
     assert session.active_tab == 2
+
+
+async def test_switch_tab_falls_back_to_topic_search(env, monkeypatch):
+    session, tools, _, _ = env
+    from jarvis.tools.search import TabMatch
+    monkeypatch.setattr(handlers, "find_tabs",
+                        lambda topic, store=None, session=None: [TabMatch(1, "api", 20.0, 2, 2, "login bug here")])
+    p = _Params({"query": "the login bug"}, _Context("switch to the login bug chat"))
+    await tools["switch_tab"](p)
+    assert session.active_tab == 1
 
 
 async def test_stage_then_send_requires_confirmation_word(env):

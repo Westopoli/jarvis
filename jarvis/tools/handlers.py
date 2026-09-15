@@ -25,6 +25,7 @@ from jarvis.events import claude_summary
 from jarvis.fillers import pick_filler
 from jarvis.session import JarvisSession, StagedPrompt
 from jarvis.speakable import to_speakable
+from jarvis.tools.search import decisive, find_tabs
 from jarvis.tools import tmux as tmux_tools
 
 CONFIRM_WORDS = ("send", "yes", "go ahead", "confirm", "do it", "allow", "approve")
@@ -131,8 +132,21 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
         query = str(params.arguments.get("query", ""))
         tab = tmux_tools.resolve_tab(query, session=session.tmux_session)
         if tab is None:
-            await params.result_callback({"error": f"no tab matches {query!r}"})
-            return
+            # Not a number or window name: maybe a topic ("the login bug").
+            matches = find_tabs(query, session.event_store, session=session.tmux_session)[:3]
+            winner = decisive(matches)
+            if winner is None:
+                await params.result_callback(
+                    {
+                        "error": f"no tab named {query!r}",
+                        "candidates": [
+                            {"tab": m.tab, "name": m.name, "snippet": m.snippet} for m in matches
+                        ],
+                        "instruction": "Read the candidates back by number and ask, or ask for the tab number.",
+                    }
+                )
+                return
+            tab = winner.tab
         session.active_tab = tab
         window = _window_for(session, tab)
         name = window.name if window else None
@@ -141,6 +155,39 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             f"Tab {number_word(tab)}, {name}." if name else f"Tab {number_word(tab)}.",
             {"active_tab": tab, "name": name},
         )
+
+    async def find_tab(params) -> None:
+        topic = str(params.arguments.get("topic", "")).strip()
+        if not topic:
+            await params.result_callback({"error": "empty topic"})
+            return
+        await _filler("find_tab")
+        matches = find_tabs(topic, session.event_store, session=session.tmux_session)[:3]
+        winner = decisive(matches)
+        result = {
+            "topic": topic,
+            "candidates": [
+                {"tab": m.tab, "name": m.name, "score": m.score,
+                 "words_matched": f"{m.terms_hit}/{m.terms_total}", "snippet": m.snippet}
+                for m in matches
+            ],
+        }
+        if winner is not None:
+            session.active_tab = winner.tab
+            await _speak_instead_of_llm(
+                params,
+                f"That's tab {number_word(winner.tab)}, {winner.name}. Switched.",
+                {**result, "switched_to": winner.tab},
+            )
+            return
+        if not matches:
+            result["instruction"] = "No tab mentions that. Tell the user and ask for the tab number."
+        else:
+            result["instruction"] = (
+                "Ambiguous. Read the top candidates back as 'tab <number>, <name>' "
+                "with a few words from each snippet, and ask which one. Do not switch."
+            )
+        await params.result_callback(result)
 
     async def read_tab(params) -> None:
         tab = _resolve_target_tab(session, params.arguments)
@@ -285,6 +332,13 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
             {"query": {"type": "string", "description": "Tab number or name fragment."}},
             ["query"],
             switch_tab,
+        ),
+        _schema(
+            "find_tab",
+            "Find which tab the user means from a topic they describe ('the one about the phone setup', 'where we fixed the login bug'). Searches every tab's recent text. Switches automatically when one tab clearly wins.",
+            {"topic": {"type": "string", "description": "The topic words the user said, minus filler."}},
+            ["topic"],
+            find_tab,
         ),
         _schema(
             "read_tab",

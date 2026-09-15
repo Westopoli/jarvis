@@ -14,6 +14,7 @@ plain fakes.
 from __future__ import annotations
 
 import asyncio
+import unittest.mock
 
 import pytest
 
@@ -59,6 +60,28 @@ async def test_get_warm_services_reused_across_sequential_calls(monkeypatch):
 
     assert len(calls) == 1
     assert first is second
+
+
+def test_build_services_delegates_llm_construction_to_llm_providers(monkeypatch):
+    """build_services must not build the LLM itself -- that's
+    jarvis.llm_providers.build_llm's job (Ollama-by-default, Groq+failover
+    opt-in). This is the regression guard that the delegation actually
+    happened, not just that some LLM object got returned.
+
+    STT/TTS construction is stubbed too: they're real model loaders
+    (WhisperSTTService, Kokoro) untouched by this feature -- stubbing them
+    keeps this test about the LLM delegation only, not a slow/network-bound
+    model-loading test."""
+    calls = []
+    fake_stt_cls = unittest.mock.MagicMock(return_value="the-stt")
+    monkeypatch.setattr(voice, "WhisperSTTService", fake_stt_cls)
+    monkeypatch.setattr(voice, "build_kokoro_tts_service", lambda *a, **k: "the-tts")
+    monkeypatch.setattr(voice.llm_providers, "build_llm", lambda cfg: calls.append(cfg) or "the-llm")
+
+    stt, llm, tts = voice.build_services(_FakeConfig())
+
+    assert len(calls) == 1
+    assert (stt, llm, tts) == ("the-stt", "the-llm", "the-tts")
 
 
 class _FakeWorker:

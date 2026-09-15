@@ -19,10 +19,10 @@ cuda_libs.preload()  # must precede the faster-whisper import below
 
 from pipecat.frames.frames import TranscriptionFrame, TTSSpeakFrame  # noqa: E402
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker  # noqa: E402
-from pipecat.services.ollama.llm import OLLamaLLMService  # noqa: E402
 from pipecat.services.whisper.stt import WhisperSTTService  # noqa: E402
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
+from jarvis import llm_providers  # noqa: E402
 from jarvis.announcer import Announcer  # noqa: E402
 from jarvis.config import Config  # noqa: E402
 from jarvis.pipeline import TurnConfig, build_pipeline  # noqa: E402
@@ -48,17 +48,7 @@ def build_services(cfg: Config):
         device="auto",
         compute_type="int8",
     )
-    llm = OLLamaLLMService(
-        base_url=cfg.ollama_host.rstrip("/") + "/v1",
-        settings=OLLamaLLMService.Settings(
-            model=cfg.ollama_model,
-            temperature=0.2,
-            # Ollama's OpenAI-compatible endpoint ignores `think`; it honours
-            # reasoning_effort. Without this qwen3 burns 100-170 hidden
-            # reasoning tokens per call (~2.5 s on the 3060) before answering.
-            extra={"extra_body": {"reasoning_effort": "none"}},
-        ),
-    )
+    llm = llm_providers.build_llm(cfg)
     tts = build_kokoro_tts_service()
     return stt, llm, tts
 

@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Projects/jarvis
-# Secrets and identifiers live outside the repo: TELNYX_API_KEY,
-# TELNYX_ALLOWED_CALLER, JARVIS_PUBLIC_HOSTNAME, ...
-EnvironmentFile=%h/.config/jarvis/env
+# Secrets and identifiers live in the gitignored .env (also read by
+# jarvis.config.load_config, so manual runs need no `source`).
+EnvironmentFile=%h/Projects/jarvis/.env
 Environment=OLLAMA_KEEP_ALIVE=-1
 ExecStart=/usr/bin/env uv run jarvis
 Restart=on-failure

@@ -105,7 +105,7 @@ def test_config_is_a_dataclass():
 
 
 def test_defaults_match_env_example_when_nothing_is_set(clean_env):
-    config = load_config()
+    config = load_config(dotenv=False)
 
     assert {name: getattr(config, name) for name in EXPECTED_DEFAULTS} == EXPECTED_DEFAULTS
     # .env.example documents OLLAMA_KEEP_ALIVE=-1 and JARVIS_PORT=8000; the
@@ -118,7 +118,7 @@ def test_every_documented_env_var_overrides_its_default(clean_env):
     for key, value in OVERRIDES.items():
         clean_env.setenv(key, value)
 
-    config = load_config()
+    config = load_config(dotenv=False)
 
     assert {name: getattr(config, name) for name in EXPECTED_DEFAULTS} == {
         "ollama_host": "http://10.0.0.9:1234",
@@ -153,7 +153,7 @@ def test_telnyx_configured_requires_both_credentials(
     if allowed_caller is not None:
         clean_env.setenv("TELNYX_ALLOWED_CALLER", allowed_caller)
 
-    assert load_config().telnyx_configured is expected
+    assert load_config(dotenv=False).telnyx_configured is expected
 
 
 # --------------------------------------------------------------------------

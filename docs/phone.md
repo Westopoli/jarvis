@@ -5,7 +5,7 @@ the steps below are for Twilio.
 
 ## 1. Secrets file
 
-`~/.config/jarvis/env` (mode 600, outside the repo). Fill in:
+`.env` in the repo root (gitignored, never committed). Fill in:
 
 ```
 TWILIO_ACCOUNT_SID=AC...            # Twilio console home
@@ -47,8 +47,7 @@ token and rejects anything else. Callers not in `JARVIS_ALLOWED_CALLER` get
 ## 4. Run
 
 ```
-set -a; source ~/.config/jarvis/env; set +a
-uv run jarvis            # or: systemctl --user enable --now jarvis
+uv run jarvis            # reads .env itself            # or: systemctl --user enable --now jarvis
 curl https://$JARVIS_PUBLIC_HOSTNAME/health
 ```
 

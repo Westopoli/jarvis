@@ -9,6 +9,27 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from pathlib import Path
+
+DOTENV = Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_dotenv(path: Path = DOTENV) -> None:
+    """Load KEY=VALUE lines from the repo's .env into os.environ.
+
+    Real environment variables win; the file only fills in what is unset.
+    The file is gitignored: it holds Twilio credentials and your number.
+    """
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 @dataclasses.dataclass
@@ -30,7 +51,9 @@ class Config:
         return bool(self.telnyx_api_key) and bool(self.telnyx_allowed_caller)
 
 
-def load_config() -> Config:
+def load_config(*, dotenv: bool = True) -> Config:
+    if dotenv:
+        load_dotenv()
     return Config(
         ollama_host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"),
         ollama_model=os.environ.get("OLLAMA_MODEL", "qwen3:8b"),

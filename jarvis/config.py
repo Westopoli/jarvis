@@ -48,6 +48,8 @@ class Config:
     llm_provider: str = "ollama"
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
 
     @property
     def telnyx_configured(self) -> bool:
@@ -72,4 +74,6 @@ def load_config(*, dotenv: bool = True) -> Config:
         llm_provider=os.environ.get("JARVIS_LLM_PROVIDER", "ollama"),
         groq_api_key=os.environ.get("GROQ_API_KEY", ""),
         groq_model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+        deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        deepseek_model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
     )

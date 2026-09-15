@@ -18,6 +18,12 @@ _HOW_YOU_WORK = {
         "cloud model has trouble you fall back to a Qwen model through Ollama, "
         "still on the home machine."
     ),
+    "deepseek": (
+        "you run on a DeepSeek model in the cloud, hear through whisper, and "
+        "speak with Kokoro, both on the home machine; if the cloud model has "
+        "trouble you fall back to a Qwen model through Ollama, still on the "
+        "home machine."
+    ),
 }
 
 _TEMPLATE = """\

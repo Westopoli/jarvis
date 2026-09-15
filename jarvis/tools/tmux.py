@@ -49,6 +49,32 @@ def _clean_pane_text(raw: str) -> str:
     return "\n".join(kept)
 
 
+def own_window_index(session: str | None = None) -> int | None:
+    """The tmux window this Jarvis process is itself running in, or ``None``
+    if not running inside tmux at all (a test, or a run outside tmux).
+
+    tmux sets ``TMUX_PANE`` for any process running inside a pane; resolving
+    it to a window index (rather than comparing pane text) is what lets
+    ``tmux_list`` exclude Jarvis's own console from every tool-facing result
+    -- see the 2026-09-15 find_tab self-match bug: with the console visible,
+    a topic the user just spoke trivially "matches" it, because the debug
+    log at that moment is printing the user's own words back into that pane.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return None
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#I"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return int(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
 def tmux_list(session: str | None = None) -> list[TmuxWindow]:
     session = _resolve_session(session)
     result = subprocess.run(
@@ -64,14 +90,18 @@ def tmux_list(session: str | None = None) -> list[TmuxWindow]:
         text=True,
         check=True,
     )
+    own = own_window_index(session=session)
     windows: list[TmuxWindow] = []
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
         index_str, name, pane_path, pane_command = line.split("|", 3)
+        index = int(index_str)
+        if index == own:
+            continue
         windows.append(
             TmuxWindow(
-                index=int(index_str),
+                index=index,
                 name=name,
                 pane_path=pane_path,
                 pane_command=pane_command,

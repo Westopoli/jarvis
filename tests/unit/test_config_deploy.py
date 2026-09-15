@@ -41,10 +41,12 @@ EXPECTED_DEFAULTS = {
     "telnyx_allowed_caller": "",
     "jarvis_public_hostname": "",
     "jarvis_host": "127.0.0.1",
-    # Groq: cloud LLM backend, opt-in via JARVIS_LLM_PROVIDER.
+    # Groq/DeepSeek: cloud LLM backends, opt-in via JARVIS_LLM_PROVIDER.
     "llm_provider": "ollama",
     "groq_api_key": "",
     "groq_model": "openai/gpt-oss-120b",
+    "deepseek_api_key": "",
+    "deepseek_model": "deepseek-chat",
 }
 
 ENV_KEYS = [
@@ -61,6 +63,8 @@ ENV_KEYS = [
     "JARVIS_LLM_PROVIDER",
     "GROQ_API_KEY",
     "GROQ_MODEL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_MODEL",
 ]
 
 OVERRIDES = {
@@ -77,6 +81,8 @@ OVERRIDES = {
     "JARVIS_LLM_PROVIDER": "groq",
     "GROQ_API_KEY": "gsk_test0123456789",
     "GROQ_MODEL": "openai/gpt-oss-20b",
+    "DEEPSEEK_API_KEY": "sk_test0123456789",
+    "DEEPSEEK_MODEL": "deepseek-reasoner",
 }
 
 
@@ -142,6 +148,8 @@ def test_every_documented_env_var_overrides_its_default(clean_env):
         "llm_provider": "groq",
         "groq_api_key": "gsk_test0123456789",
         "groq_model": "openai/gpt-oss-20b",
+        "deepseek_api_key": "sk_test0123456789",
+        "deepseek_model": "deepseek-reasoner",
     }
     assert (str(config.ollama_keep_alive), int(config.jarvis_port)) == ("30m", 9001)
 

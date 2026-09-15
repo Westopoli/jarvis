@@ -26,6 +26,13 @@ def test_groq_prompt_mentions_groq_and_drops_the_fully_local_claim():
     assert _LOCAL_CLAIM not in prompt
 
 
+def test_deepseek_prompt_mentions_deepseek_and_drops_the_fully_local_claim():
+    prompt = build_system_prompt("deepseek")
+
+    assert "DeepSeek" in prompt
+    assert _LOCAL_CLAIM not in prompt
+
+
 def test_default_provider_falls_back_to_ollama_wording():
     assert build_system_prompt(None) == build_system_prompt("ollama")
 
@@ -41,7 +48,6 @@ def test_the_two_variants_share_everything_except_the_how_you_work_sentence():
     two variants should differ only in the local/cloud sentence, not in
     persona, tool rules, or anything else."""
     ollama_prompt = build_system_prompt("ollama")
-    groq_prompt = build_system_prompt("groq")
-
-    assert ollama_prompt.split("\n\n")[0] == groq_prompt.split("\n\n")[0]  # persona intro
-    assert ollama_prompt.split("Tool rules:")[1] == groq_prompt.split("Tool rules:")[1]
+    for other in (build_system_prompt("groq"), build_system_prompt("deepseek")):
+        assert ollama_prompt.split("\n\n")[0] == other.split("\n\n")[0]  # persona intro
+        assert ollama_prompt.split("Tool rules:")[1] == other.split("Tool rules:")[1]

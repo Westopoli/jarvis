@@ -238,6 +238,35 @@ def test_tmux_list_defaults_session_to_jarvis_tmux_session_env(tmux_fixture, mon
     assert [w.name for w in tmux_list()] == ["only-window"]
 
 
+def test_tmux_list_excludes_jarviss_own_console_pane(tmux_fixture, monkeypatch):
+    """Jarvis must never be able to read, switch to, or find_tab into the
+    window it is itself running in -- the 2026-09-15 bug where find_tab
+    matched Jarvis's own server-console tab (its debug log echoes the user's
+    own words back into that pane, so any topic trivially "matches" it) and
+    got stuck reading his own operating instructions for a whole call. tmux
+    sets TMUX_PANE for any process running inside a pane; that's how Jarvis
+    identifies -- and excludes -- his own window."""
+    own_pane_id = _tmux("list-panes", "-t", f"{SESSION}:1", "-F", "#{pane_id}").stdout.strip()
+    monkeypatch.setenv("TMUX_PANE", own_pane_id)
+
+    windows = tmux_list(session=SESSION)
+
+    assert 1 not in [w.index for w in windows]
+    assert len(windows) == 4  # 5 real windows, minus Jarvis's own
+
+
+def test_tmux_list_without_tmux_pane_set_issues_exactly_one_subprocess_call(
+    tmux_fixture, run_call_spy
+):
+    """No TMUX_PANE (not running inside tmux, or a test) must not add a
+    second subprocess call trying to resolve a window that doesn't apply."""
+    assert "TMUX_PANE" not in os.environ
+
+    tmux_list(session=SESSION)
+
+    assert len(run_call_spy) == 1
+
+
 # --------------------------------------------------------------------------
 # AC-2: resolve_tab
 # --------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pipecat.pipeline.llm_switcher import LLMSwitcher
 from pipecat.pipeline.service_switcher import ServiceSwitcherStrategyFailover
+from pipecat.services.deepseek.llm import DeepSeekLLMService
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.ollama.llm import OLLamaLLMService
 
@@ -76,13 +77,44 @@ def build_groq_llm(cfg: Config) -> GroqLLMService:
     )
 
 
+class _FailoverDeepSeekLLMService(DeepSeekLLMService):
+    """DeepSeek member of the failover switcher: same fix as Groq's, for the
+    same reason -- BaseOpenAILLMService's error path is shared by every
+    OpenAI-compatible subclass, so the gap isn't provider-specific."""
+
+    async def push_error(self, *args, **kwargs):
+        kwargs["force_treat_as_permanent"] = True
+        await super().push_error(*args, **kwargs)
+
+
+def build_deepseek_llm(cfg: Config) -> DeepSeekLLMService:
+    """The DeepSeek cloud backend.
+
+    Defaults to ``deepseek-chat`` (DeepSeek's non-reasoning endpoint), not
+    ``deepseek-reasoner`` -- the reasoning endpoint "thinks" before every
+    reply, the same multi-second-TTFT trap already hit twice in this project
+    (Ollama's qwen3, and the reason Groq's gpt-oss needs reasoning_effort
+    suppressed). deepseek-chat needs no such workaround; it's non-reasoning
+    by choice of endpoint, not by a settable flag.
+    """
+    if not cfg.deepseek_api_key:
+        raise RuntimeError(
+            "JARVIS_LLM_PROVIDER=deepseek requires DEEPSEEK_API_KEY to be set in .env"
+        )
+    return _FailoverDeepSeekLLMService(
+        api_key=cfg.deepseek_api_key,
+        settings=DeepSeekLLMService.Settings(model=cfg.deepseek_model, temperature=0.2),
+    )
+
+
 def build_llm(cfg: Config):
     """Dispatch on ``cfg.llm_provider``.
 
     ``"ollama"`` (default): a single plain service, pipeline shape unchanged.
-    ``"groq"``: an ``LLMSwitcher`` starting active on Groq (list order --
-    ``ServiceSwitcherStrategy`` picks ``services[0]``), falling over to
-    Ollama on any Groq error via ``ServiceSwitcherStrategyFailover``.
+    ``"groq"`` / ``"deepseek"``: an ``LLMSwitcher`` starting active on the
+    cloud service (list order -- ``ServiceSwitcherStrategy`` picks
+    ``services[0]``), falling over to Ollama on any cloud-service error via
+    ``ServiceSwitcherStrategyFailover``.
     """
     provider = (cfg.llm_provider or "ollama").strip().lower()
     if provider == "ollama":
@@ -92,11 +124,16 @@ def build_llm(cfg: Config):
             raise RuntimeError(
                 "JARVIS_LLM_PROVIDER=groq requires GROQ_API_KEY to be set in .env"
             )
-        groq_llm = build_groq_llm(cfg)
-        ollama_llm = build_ollama_llm(cfg)
-        return LLMSwitcher(
-            llms=[groq_llm, ollama_llm], strategy_type=ServiceSwitcherStrategyFailover
+        cloud_llm = build_groq_llm(cfg)
+    elif provider == "deepseek":
+        if not cfg.deepseek_api_key:
+            raise RuntimeError(
+                "JARVIS_LLM_PROVIDER=deepseek requires DEEPSEEK_API_KEY to be set in .env"
+            )
+        cloud_llm = build_deepseek_llm(cfg)
+    else:
+        raise ValueError(
+            f"unknown JARVIS_LLM_PROVIDER: {provider!r} (expected 'ollama', 'groq', or 'deepseek')"
         )
-    raise ValueError(
-        f"unknown JARVIS_LLM_PROVIDER: {provider!r} (expected 'ollama' or 'groq')"
-    )
+    ollama_llm = build_ollama_llm(cfg)
+    return LLMSwitcher(llms=[cloud_llm, ollama_llm], strategy_type=ServiceSwitcherStrategyFailover)

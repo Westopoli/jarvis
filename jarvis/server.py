@@ -22,6 +22,7 @@ Phone call flow (Telnyx variant):
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Request, WebSocket
@@ -85,8 +86,29 @@ async def run_call(websocket: WebSocket, serializer, store: EventStore) -> None:
     )
 
 
-def create_app(store: EventStore, *, call_runner=None) -> FastAPI:
-    app = FastAPI()
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Pay the ~11 s Whisper-plus-Kokoro model-load cost here, once, instead
+    # of on the first real phone call. Without this the first caller after
+    # every server restart gets ~15 s of silence before Jarvis says a word
+    # -- long enough to hang up on.
+    from jarvis import voice
+
+    try:
+        await voice.get_warm_services(load_config())
+        logger.info("voice services warmed")
+    except Exception as exc:
+        logger.warning(f"could not pre-warm voice services at startup: {exc}")
+    yield
+
+
+def create_app(store: EventStore, *, call_runner=None, warm: bool = False) -> FastAPI:
+    """``warm=True`` pre-loads the voice models (Whisper, Kokoro) on FastAPI
+    startup instead of on the first call. Defaults to False so every test
+    helper that builds an app via this function stays fast and GPU-free
+    without having to remember an extra argument; the real server (below)
+    opts in explicitly."""
+    app = FastAPI(lifespan=_lifespan if warm else None)
     app.state.store = store
     runner = call_runner or run_call
 
@@ -194,7 +216,7 @@ def create_app(store: EventStore, *, call_runner=None) -> FastAPI:
 
 load_dotenv()  # routes read TWILIO_*/JARVIS_* straight from the environment
 store = EventStore()
-app = create_app(store)
+app = create_app(store, warm=True)
 
 
 def main() -> None:

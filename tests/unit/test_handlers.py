@@ -87,6 +87,33 @@ def _tool_names(session):
     return [t.name for t in handlers.build_tools(session)]
 
 
+async def test_every_tool_call_logs_its_name_and_arguments_before_running(env):
+    """The observability this feature needs for the Groq-vs-Ollama desktop
+    comparison: a TOOLCALL log line, objective and greppable, before the
+    real handler runs -- not a change to any individual handler's own
+    behavior.
+
+    handlers.py logs via loguru (matching every other module in this
+    codebase), so this captures with a temporary loguru sink rather than
+    pytest's stdlib-only ``caplog``."""
+    from loguru import logger
+
+    session, tools, _, _ = env
+    p = _Params({"query": "web"}, _Context("switch to web"))
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda msg: messages.append(msg.record["message"]), level="INFO")
+    try:
+        await tools["switch_tab"](p)
+    finally:
+        logger.remove(sink_id)
+
+    matching = [m for m in messages if "TOOLCALL switch_tab" in m]
+    assert len(matching) == 1
+    assert "web" in matching[0]
+    assert session.active_tab == 2  # the real handler still ran
+
+
 def test_every_tool_has_a_handler_and_unique_name():
     session = JarvisSession()
     names = _tool_names(session)

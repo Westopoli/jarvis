@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.frames.frames import FunctionCallResultProperties
 
@@ -383,6 +384,19 @@ def build_tools(session: JarvisSession) -> list[FunctionSchema]:
     ]
 
 
+def _logged(name: str, handler: Callable) -> Callable:
+    """Log every call to a tool before running it: ``TOOLCALL <name>
+    args=<...>``. Generic and provider-agnostic -- this is what makes a
+    Groq-vs-Ollama desktop A/B run comparable turn by turn (see
+    scripts/compare_llm_runs.py), not a change to any handler's behavior."""
+
+    async def wrapper(params) -> None:
+        logger.info(f"TOOLCALL {name} args={dict(params.arguments)}")
+        await handler(params)
+
+    return wrapper
+
+
 def _schema(
     name: str, description: str, properties: dict, required: list[str], handler: Callable
 ) -> FunctionSchema:
@@ -391,5 +405,5 @@ def _schema(
         description=description,
         properties=properties,
         required=required,
-        handler=handler,
+        handler=_logged(name, handler),
     )

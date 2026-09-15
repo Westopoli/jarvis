@@ -29,7 +29,7 @@ from fastapi.responses import Response
 from loguru import logger
 from starlette.websockets import WebSocketDisconnect
 
-from jarvis.config import load_config
+from jarvis.config import load_config, load_dotenv
 from jarvis.events import EventStore
 from jarvis.transports.telnyx import build_telnyx_serializer, is_allowed_caller
 from jarvis.transports.twilio import build_twilio_serializer, signature_valid, twiml_for
@@ -192,6 +192,7 @@ def create_app(store: EventStore, *, call_runner=None) -> FastAPI:
     return app
 
 
+load_dotenv()  # routes read TWILIO_*/JARVIS_* straight from the environment
 store = EventStore()
 app = create_app(store)
 
